@@ -197,6 +197,25 @@ $U_f$) and the backward RNN (updating $W_b$, $U_b$).
 
 \textbf{True labels:} the $\to$ 0, hair $\to$ 1, dryer $\to$ 1, is $\to$ 2, great $\to$ 4
 
+\subsection{One-Hot True Label Vectors for the Vanilla RNN Example}
+
+The five POS tags are indexed as: 0 = DET, 1 = NOUN, 2 = VERB, 3 = ADV, 4 = ADJ.
+The one-hot true label vectors are:
+
+\begin{align*}
+    y^{(1)} &= [1, 0, 0, 0, 0]^\top \quad \text{``the''} \to \text{DET (index 0)} \\
+    y^{(2)} &= [0, 1, 0, 0, 0]^\top \quad \text{``hair''} \to \text{NOUN (index 1)} \\
+    y^{(3)} &= [0, 1, 0, 0, 0]^\top \quad \text{``dryer''} \to \text{NOUN (index 1)} \\
+    y^{(4)} &= [0, 0, 1, 0, 0]^\top \quad \text{``is''} \to \text{VERB (index 2)} \\
+    y^{(5)} &= [0, 0, 0, 0, 1]^\top \quad \text{``great''} \to \text{ADJ (index 4)}
+\end{align*}
+
+Note that ADJ is at index 4, not index 3, because ADV occupies index 3 even though
+no word in this sentence is tagged ADV. The output layer still has a neuron for every
+POS tag --- the softmax always produces 5 probabilities regardless of which tags
+appear in a given sentence.
+
+
 \subsection{Assumed Weight Matrices}
 
 \begin{equation}
