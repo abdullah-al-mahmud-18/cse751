@@ -1,0 +1,184 @@
+\section{Encoder-Decoder and Attention}
+
+\subsection{Why Encoder-Decoder? The Limitation of Sequence Labeling}
+
+In sequence labeling tasks like POS tagging, each input token maps to exactly one output
+token of the same position. This one-to-one alignment breaks down for tasks like machine
+translation, where the source and target sentences can have different lengths and completely
+different word orders. A model that pairs each input word rigidly with one output word
+cannot handle this. The encoder-decoder architecture was introduced to solve this problem.
+
+\subsection{The Three Components of an Encoder-Decoder Model}
+
+An encoder-decoder network consists of three parts:
+
+\begin{itemize}
+    \item \textbf{Encoder:} An RNN that reads the source sequence $x_1^n$ word by word,
+    updating its hidden state at each step. Its final hidden state $h_n^e$ is a compressed
+    representation of the entire input sequence.
+
+    \item \textbf{Context Vector} $c$: The final encoder hidden state passed to the decoder.
+    It is the only bridge between the encoder and decoder.
+    \[
+        c = h_n^e
+    \]
+
+    \item \textbf{Decoder:} An RNN initialized with $c$ as its first hidden state
+    $h_0^d = c$. It autoregressively generates the target sequence one token at a time,
+    conditioning each step on the previous hidden state, the previous output token, and
+    the context vector.
+    \[
+        h_t^d = g(\hat{y}_{t-1},\, h_{t-1}^d,\, c)
+    \]
+    \[
+        z_t = f(h_t^d), \qquad y_t = \text{softmax}(z_t)
+    \]
+    Generation continues until an end-of-sequence marker is produced.
+\end{itemize}
+
+\subsection{The Sentence Separator Token}
+
+To train this model, source and target sentences are concatenated with a separator token
+\texttt{<s>} placed between them. The encoder processes the source side; output is ignored
+during this phase. After \texttt{<s>}, the decoder begins generating the target sequence.
+The model is trained to minimize cross-entropy loss averaged over all target tokens:
+\[
+    L = \frac{1}{T} \sum_{i=1}^{T} L_i, \qquad L_i = -\log P(y_i)
+\]
+
+\subsection{Teacher Forcing}
+
+During inference, the decoder feeds its own predicted output $\hat{y}_t$ as input to the
+next step. If an early prediction is wrong, the error compounds over subsequent steps.
+During training, this is avoided using \textbf{teacher forcing}: the correct gold target
+token is always used as the next input, regardless of what the decoder predicted. This
+stabilizes and accelerates training.
+
+\subsection{The Bottleneck Problem}
+
+The context vector $c = h_n^e$ must encode the entire meaning of the source sentence into
+a single fixed-size vector. For short sentences this works reasonably well, but for long
+sentences information from early tokens tends to be poorly represented by the time the
+encoder reaches the end. This is a \textbf{representational bottleneck} --- not a vanishing
+gradient problem, but a capacity problem.
+
+\subsection{Attention: Motivation}
+
+Instead of relying on a single static context vector, the \textbf{attention mechanism}
+lets the decoder dynamically look at all encoder hidden states at every decoding step.
+Each encoder hidden state $h_j^e$ corresponds roughly to one input token. Rather than
+compressing everything into one vector upfront, the decoder computes a fresh, custom
+context vector $c_i$ at each step $i$, weighted toward whichever encoder states are most
+relevant to the token currently being generated.
+
+\subsection{Attention: Step-by-Step Computation}
+
+\textbf{Step 1 --- Score each encoder state.}
+At decoding step $i$, a relevance score is computed between the prior decoder hidden state
+$h_{i-1}^d$ and each encoder hidden state $h_j^e$. The simplest form is
+\textbf{dot-product attention}:
+\[
+    \text{score}(h_{i-1}^d,\, h_j^e) = h_{i-1}^d \cdot h_j^e
+\]
+A high score means those two vectors are similar, indicating that encoder state $j$ is
+relevant to the current decoding step.
+
+\textbf{Step 2 --- Normalize with softmax.}
+Scores are converted to a probability distribution over all encoder states, giving
+attention weights $\alpha_{ij}$ that sum to 1:
+\[
+    \alpha_{ij} = \frac{\exp(\text{score}(h_{i-1}^d,\, h_j^e))}
+                       {\sum_k \exp(\text{score}(h_{i-1}^d,\, h_k^e))}
+\]
+
+\textbf{Step 3 --- Compute a weighted context vector.}
+The context vector for step $i$ is a weighted average of all encoder hidden states:
+\[
+    c_i = \sum_j \alpha_{ij}\, h_j^e
+\]
+
+\textbf{Step 4 --- Condition the decoder on it.}
+The decoder hidden state is computed using this dynamic context:
+\[
+    h_i^d = g(\hat{y}_{i-1},\, h_{i-1}^d,\, c_i)
+\]
+
+\subsection{Bilinear (Parameterized) Attention}
+
+A more powerful scoring function introduces a learned weight matrix $W_s$:
+\[
+    \text{score}(h_{i-1}^d,\, h_j^e) = h_{i-1}^d\, W_s\, h_j^e
+\]
+$W_s$ is trained end-to-end alongside the rest of the model. This has two advantages
+over dot-product attention: it learns \textit{which aspects} of similarity matter for the
+task, and it allows the encoder and decoder to have different hidden state dimensionalities
+(dot-product attention requires them to be the same size).
+
+\subsection{Architecture of the Encoder RNN}
+
+The encoder is not a vanilla RNN. The standard encoder design is a \textbf{stacked
+bidirectional LSTM (biLSTM)}, combining three ideas:
+
+\begin{itemize}
+    \item \textbf{LSTM instead of vanilla RNN:} LSTMs use gated cell states to avoid
+    vanishing gradients, allowing reliable retention of information across long sequences.
+    A vanilla RNN cannot encode a long sentence reliably.
+
+    \item \textbf{Bidirectional:} The encoder reads the source in both directions
+    simultaneously. This gives every token's hidden state access to context from both
+    sides of the sentence --- essential for a rich representation. The forward and backward
+    hidden states are concatenated at each time step.
+
+    \item \textbf{Stacked (multi-layer):} Multiple biLSTM layers are stacked. Lower layers
+    capture surface patterns; higher layers capture abstract meaning. The context vector
+    is taken from the top layer's final hidden state.
+\end{itemize}
+
+\subsection{Architecture of the Decoder RNN}
+
+The decoder is typically a \textbf{stacked unidirectional LSTM}. It shares two of
+the encoder's three properties --- LSTM gating and multi-layer stacking --- but
+\textit{cannot} be bidirectional. Bidirectionality requires reading the sequence in both
+directions, but the decoder generates output one token at a time during inference; future
+tokens do not yet exist. The decoding direction is strictly left-to-right.
+
+Additionally, the decoder receives inputs that a plain encoder never handles: the context
+vector $c$ and the previously generated token $\hat{y}_{t-1}$ at every step.
+
+\subsection{Why Use Two RNNs at All if the Bottleneck Problem Persists?}
+
+The encoder-decoder bottleneck problem (compressing everything into one vector) and the
+vanilla RNN gradient problem (vanishing gradients over time) are two distinct problems.
+LSTMs largely solve the gradient problem. The bottleneck is a separate issue of
+representational capacity, not gradient flow.
+
+More importantly, the encoder-decoder architecture solves a problem that a single RNN
+simply cannot address: generating output sequences of a different length and with
+non-aligned word mappings relative to the input. A single RNN produces one output per
+input token --- it has no clean mechanism for the encoder-to-decoder handoff needed for
+translation. The two-RNN design made this possible. Attention was then added on top to
+fix the bottleneck that remained.
+
+The historical progression was:
+\begin{enumerate}
+    \item Single RNN $\to$ works for aligned same-length tasks, fails for translation.
+    \item Encoder-Decoder $\to$ enables translation, struggles on long sequences.
+    \item Encoder-Decoder + Attention $\to$ fixes the bottleneck, handles long sequences.
+    \item Transformer $\to$ removes the RNN entirely, built purely on attention.
+\end{enumerate}
+
+\subsection{Why Bidirectionality Requires Separate Networks}
+
+A bidirectional RNN is by definition two separate RNNs: one running forward and one
+running backward, each with its own weight matrices. There is no single RNN that can
+operate in both directions simultaneously --- the ``bi'' in biRNN means two networks.
+
+Therefore, the moment you want bidirectional encoding, you have already committed to
+multiple components. You cannot have a single RNN switch to bidirectional mode during
+encoding and then back to unidirectional mode during decoding --- those are structurally
+incompatible requirements that necessitate separate architectures.
+
+The encoder-decoder split is not just an engineering choice. It is the necessary
+architectural consequence of wanting bidirectional encoding alongside unidirectional
+decoding. The two phases have fundamentally different requirements, so they require
+separate components.
