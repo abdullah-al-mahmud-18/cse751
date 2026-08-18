@@ -1,5 +1,3 @@
-\bigskip
-
 \textbf{Let's say we have an encoder LSTM with 1 input, hidden, output layer and a decoder LSTM of same architechture. We are doing translation from english to spanish. The sentence is "The car is very cool". Our encoder and decoder is using attention mechanism. For each word in our given sentense we will have one hidden state. So, there's gonna be 5 hidden states created by the encoder. When decoder is translating the sentence to spanish, let's say right now decoder is at t = 2, at this step h\_2 is going to be one of the inputs. Is my understanding correct?}
 
 Almost, but there's a subtle but important distinction to make.
@@ -212,3 +210,60 @@ $$\frac{\partial L}{\partial W_e} = \frac{\partial L}{\partial \text{decoder out
 Each term in this chain naturally scales the gradient. If the encoder's contribution to the error was small, the middle term is small, and the gradient reaching $W_e$ is proportionally small. The math handles the blame distribution automatically.
 
 The techniques I mentioned --- gradient clipping, residual connections etc. --- exist to solve \textbf{different} problems like vanishing/exploding gradients in deep networks, not the credit assignment between encoder and decoder specifically. I shouldn't have lumped them in as if they were fixes for what you described.
+
+\bigskip
+
+\textbf{I still don't understand how encoder and decoder is producing translations where source and target sentence length is different. Let's say in English the sentence is "I am a student", in Spanish the sentence is "Soy un estudiante". I know with attention mechanism, decoder knows which word to focus on in the source sentence. But how does it know it has to generate 3 words? during training?}
+
+The decoder doesn't know in advance it needs to generate 3 words. It has no predetermined length. Instead, it learns to generate a special \textbf{end-of-sequence token} \texttt{</s>} as part of the output.
+
+During training, every target sentence is terminated with \texttt{</s>}. So the model doesn't learn to produce ``Soy un estudiante'' --- it learns to produce \textbf{``Soy un estudiante \texttt{</s>}''}. The \texttt{</s>} is treated as just another word in the vocabulary that the softmax predicts over.
+
+So at each decoding step, the model is always answering the same question: \textit{what is the next word?} --- and one of the possible answers is always \texttt{</s>}.
+
+For this example the decoder steps look like:
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Step & Output \\
+\hline
+t=1 & Soy \\
+t=2 & un \\
+t=3 & estudiante \\
+t=4 & \texttt{</s>} \\
+\hline
+\end{tabular}
+\end{center}
+
+At t=4 the model predicts \texttt{</s>} with the highest probability, and generation stops.
+
+The model learns \textbf{when} to emit \texttt{</s>} entirely from the training data. Across thousands of sentence pairs, it learns that after producing a complete translation, \texttt{</s>} should follow. It doesn't count words --- it learns the pattern of when meaning has been fully expressed.
+
+So length difference between source and target is not a problem the model explicitly solves. It's a natural consequence of autoregressive generation with a learned stop signal.
+
+\bigskip
+
+\textbf{If source sentence has 5 words and target sentence has 3, will the decoder produce 2 </s> tokens?}
+
+No, just one \texttt{</s>}. Generation \textbf{stops immediately} when the first \texttt{</s>} is predicted. The decoder doesn't run for a fixed number of steps equal to the source length --- it runs until \texttt{</s>} appears.
+
+The source sentence length has no bearing on how many steps the decoder runs. The decoder is entirely driven by its own autoregressive output. It could produce 2 words, 10 words, or 50 words regardless of whether the source had 5 words. The source length and target length are completely decoupled.
+
+\bigskip
+
+\textbf{But as far as I know if decoder is an LSTM, then a LSTM must know how many times it will unroll.}
+
+You're right, and this is a good distinction to make between training and inference.
+
+\textbf{During training} --- the target sentence is known in advance. So the decoder LSTM unrolls exactly as many steps as the target sentence length (including \texttt{</s>}). For ``Soy un estudiante \texttt{</s>}'' that's 4 steps. The unroll length is fixed per training example, determined by the gold target sentence.
+
+\textbf{During inference} --- there is no gold target sentence, so the length is unknown upfront. Here the decoder doesn't unroll all at once. It runs \textbf{one step at a time}, checks if the output is \texttt{</s>}, and if not, feeds that output back in as the next input and runs another step. It's a sequential loop, not a fixed unroll.
+
+So:
+\begin{itemize}
+    \item Training = static unroll, length known from target sentence
+    \item Inference = dynamic step-by-step loop, stops when \texttt{</s>} is predicted
+\end{itemize}
+
+This is actually the same training vs inference distinction you already know --- teacher forcing during training gives you the full target sequence upfront, which is precisely what lets you do the fixed unroll. At inference you have no such luxury, so you go step by step.
