@@ -1,0 +1,214 @@
+\bigskip
+
+\textbf{Let's say we have an encoder LSTM with 1 input, hidden, output layer and a decoder LSTM of same architechture. We are doing translation from english to spanish. The sentence is "The car is very cool". Our encoder and decoder is using attention mechanism. For each word in our given sentense we will have one hidden state. So, there's gonna be 5 hidden states created by the encoder. When decoder is translating the sentence to spanish, let's say right now decoder is at t = 2, at this step h\_2 is going to be one of the inputs. Is my understanding correct?}
+
+Almost, but there's a subtle but important distinction to make.
+
+At decoder step \textbf{i=2}, the inputs are:
+
+\begin{itemize}
+    \item $\hat{y}_1$ --- the embedding of the word generated at the previous step
+    \item $h_1^d$ --- the decoder's previous hidden state (from step 1)
+    \item $c_2$ --- the attention context vector computed at this step
+\end{itemize}
+
+The decoder then produces $h_2^d$ as the \textbf{output} of this step, not an input.
+
+So if you meant \textbf{encoder} $h_2^e$ (``car'''s hidden state), it's not a direct input either. What happens is that \textbf{all five encoder hidden states} $h_1^e \ldots h_5^e$ contribute to $c_2$ via attention weights $\alpha_{2j}$. $h_2^e$ gets one attention weight, but so do $h_1^e$, $h_3^e$, $h_4^e$, and $h_5^e$. The final $c_2$ is:
+
+$$c_2 = \sum_j \alpha_{2j} h_j^e \quad \text{(weighted sum of all 5 encoder states)}$$
+
+And if you meant \textbf{decoder} $h_2^d$ --- that's what this step \textit{produces}, not what it takes in.
+
+So the correct picture at i=2 is: $\{\hat{y}_1,\ h_1^d,\ c_2\} \rightarrow h_2^d \rightarrow y_2$
+
+\bigskip
+
+\textbf{The context `c` that you are talking about, is this calculated at each time step during decoding?}
+
+Yes --- that's precisely what attention adds over the basic encoder-decoder.
+
+\begin{itemize}
+    \item \textbf{Without attention}: $c = h_n^e$ (encoder's final hidden state), computed once, stays fixed across all decoding steps.
+    \item \textbf{With attention}: $c_i$ is recomputed at \textbf{every} decoder step $i$, using the current decoder's previous hidden state $h_{i-1}^d$ to score all encoder states and produce a fresh weighted sum.
+\end{itemize}
+
+So for your 5-word sentence, the decoder computes $c_1, c_2, c_3, \ldots$ separately at each step, each one potentially attending to different encoder states depending on what's being translated at that moment.
+
+\bigskip
+
+\textbf{Give me a concrete example of how c is calculated. I want to know about the details of the calculations.}
+
+Let's compute $c_2$ at decoder step i=2. I'll use 2D hidden state vectors to keep the arithmetic clean.
+
+\medskip
+\textbf{Given vectors:}
+
+Decoder's previous hidden state: $h_1^d = [0.5,\ 0.3]$
+
+All 5 encoder hidden states:
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Word & Vector \\
+\hline
+$h_1^e$ ``The'' & $[0.2, 0.1]$ \\
+$h_2^e$ ``car'' & $[0.9, 0.8]$ \\
+$h_3^e$ ``is''  & $[0.3, 0.4]$ \\
+$h_4^e$ ``very''& $[0.1, 0.2]$ \\
+$h_5^e$ ``cool''& $[0.5, 0.6]$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{Step 1 --- Score each encoder state against $h_1^d$ (dot product):}
+
+\begin{verbatim}
+score(h1d, h1e) = 0.5x0.2 + 0.3x0.1 = 0.13
+score(h1d, h2e) = 0.5x0.9 + 0.3x0.8 = 0.69
+score(h1d, h3e) = 0.5x0.3 + 0.3x0.4 = 0.27
+score(h1d, h4e) = 0.5x0.1 + 0.3x0.2 = 0.11
+score(h1d, h5e) = 0.5x0.5 + 0.3x0.6 = 0.43
+\end{verbatim}
+
+\textbf{Step 2 --- Softmax over scores to get attention weights $\alpha_{2j}$:}
+
+\begin{verbatim}
+exp(0.13)=1.139,  exp(0.69)=1.994,  exp(0.27)=1.310
+exp(0.11)=1.116,  exp(0.43)=1.537
+
+sum = 7.096
+
+a21 = 1.139/7.096 = 0.16  ("The")
+a22 = 1.994/7.096 = 0.28  ("car")
+a23 = 1.310/7.096 = 0.18  ("is")
+a24 = 1.116/7.096 = 0.16  ("very")
+a25 = 1.537/7.096 = 0.22  ("cool")
+\end{verbatim}
+
+These sum to 1. Notice ``car'' gets the highest weight --- $h_1^d$ was most similar to its encoder state.
+
+\textbf{Step 3 --- Weighted sum to get $c_2$:}
+
+\begin{verbatim}
+c2 = 0.16x[0.2,0.1] + 0.28x[0.9,0.8] + 0.18x[0.3,0.4]
+   + 0.16x[0.1,0.2] + 0.22x[0.5,0.6]
+
+c2 = [0.47, 0.48]
+\end{verbatim}
+
+This $c_2$ now goes into the decoder RNN alongside $h_1^d$ and $\hat{y}_1$ to produce $h_2^d$. The whole process repeats from Step 1 at every subsequent decoder step, using the newly produced $h^d$ each time.
+
+\bigskip
+
+\textbf{Does each value in the `c\_2` attention vector represent a meaning?}
+
+Not in any human-interpretable way.
+
+Each dimension in $c_2$ is a learned numerical feature in a high-dimensional space. The network learns to encode useful information into these dimensions during training, but there's no guarantee that dimension 1 means ``subject'' and dimension 2 means ``tense'' or anything like that. The representation is distributed and entangled.
+
+What \textbf{does} have a clear meaning is the \textbf{attention weights} $\alpha_{2j}$ --- those are interpretable. In the example, the weight 0.28 for ``car'' tells you the decoder is leaning most on that word at step i=2. People often visualize these weights as a heatmap to understand what the model is ``looking at'' while translating each output word.
+
+But $c_2$ itself --- the weighted sum --- is just a compressed signal that carries a blend of encoder information, shaped by those weights. Its individual dimensions are opaque.
+
+\bigskip
+
+\textbf{At t = 2, alpha value for car is highest. So, can I say that while translating to Spanish, the decoder is paying most attention to the word "car"?}
+
+Yes, exactly. That's precisely the intuition behind attention weights. At decoder step i=2, the model is focusing most on ``car'' while generating the corresponding Spanish output word.
+
+This is also why attention weights are considered interpretable --- if you visualize them as a heatmap across all decoding steps, you can see which source words the decoder attended to when producing each target word. For translation between languages with different word orders (like English and Spanish), you'd often see the attention pattern shift in a way that reflects the grammatical reordering.
+
+\bigskip
+
+\textbf{I have seen examples where lenght of source language sentence is not equal to target language sentence. In those case the decoder looks at or pays attention to multiple words in the source language. But from the above example we see that only the highest value alpha is payed most attention. So how does paying attention to multiple source word work?}
+
+The decoder is \textbf{always} attending to all source words simultaneously --- it's never picking just one. The attention weights are a \textbf{distribution}, not a selection.
+
+In the example, the weights were:
+
+\begin{verbatim}
+"The"  = 0.16
+"car"  = 0.28  <- highest
+"is"   = 0.18
+"very" = 0.16
+"cool" = 0.22
+\end{verbatim}
+
+All five contributed to $c_2$. ``car'' contributed the most, but ``cool'' (0.22) and ``is'' (0.18) also had meaningful influence. The final $c_2$ was a blend of all of them.
+
+Now for a case like translating ``very cool'' $\rightarrow$ ``muy genial'', at that decoder step the attention weights might look like:
+
+\begin{verbatim}
+"The"  = 0.05
+"car"  = 0.08
+"is"   = 0.07
+"very" = 0.38
+"cool" = 0.42
+\end{verbatim}
+
+Here the weight is \textbf{spread across two words}, and $c$ at that step becomes a blend heavily influenced by both ``very'' and ``cool'' together. The resulting context vector captures information from both, and the decoder uses that combined signal to produce the right output.
+
+So the difference isn't between attending to one word vs multiple words --- it's about \textbf{where the weight distribution is concentrated}: sharply peaked on one word, or spread across several.
+
+\bigskip
+
+\textbf{In a regular LSTM, if we are doing POS tagging or sentiment analysis, after processing a sequence, LSTM will calculate loss, perform backpropagation, gradient descent and weight update. This happens during training of course so that we can get optimal weights for testing. But in an encoder (where LSTM is used), the encoder doesn't need to generate any output for translation task. Output is generated by decoder. In that case does the encoder calculates loss? or perform the other tasks that a regular LSTM performs?}
+
+The encoder computes \textbf{no loss of its own}. Loss is computed only at the decoder side --- cross-entropy between the decoder's predicted output words and the gold target words.
+
+But the encoder's weights \textbf{do} get updated during training. Here's how:
+
+\begin{enumerate}
+    \item Decoder produces output words
+    \item Loss is computed at the decoder output
+    \item Backpropagation flows \textbf{backward through the decoder}, then through the attention mechanism, and \textbf{continues back into the encoder}
+    \item Gradients reach the encoder's weights, and gradient descent updates them
+\end{enumerate}
+
+So the encoder is trained \textbf{indirectly} --- it gets no loss signal of its own, but it receives gradients from the decoder's loss. The entire system --- encoder, attention, decoder --- is trained \textbf{end-to-end as one unified model} with a single loss function.
+
+This is actually why attention helps encoder training too. Without attention, the only gradient path into the encoder is through the single context vector $c$. With attention, gradients flow back through \textbf{all encoder hidden states} via the attention weights, giving the encoder much richer gradient signal to learn from.
+
+\bigskip
+
+\textbf{If I understand correctly, after decoder has completed translation, it computes loss and then during gradient descent the gradient goes back to encoder as well.}
+
+Mostly correct, with one small precision: loss isn't computed once after the full translation is done. It's computed \textbf{at each decoder timestep} (per-word cross-entropy), then \textbf{averaged} into a single sentence-level loss:
+
+$$L = \frac{1}{T} \sum_i L_i$$
+
+You can see this in Figure 9.20 from your textbook --- each target word has its own loss value, and they get averaged together.
+
+Then backpropagation runs once on that aggregated loss, and the gradients flow backward through all decoder steps (BPTT), through the attention mechanism, and into the encoder. So it's not that each timestep triggers its own backprop --- losses are accumulated first, then a single backward pass updates everything.
+
+But your core understanding is right: the gradient from the decoder's loss reaches back into the encoder, which is how the encoder gets trained despite having no loss of its own.
+
+\bigskip
+
+\textbf{In encoder decoder architechture, loss is calculated in decoding steps. based on those gradients encoder's weights are getting updated. Since we are updating encoder's weight based on decoder's mistake, doesn't that cause wrong weight update? For example, let's say encoder created good context in step but it was the decoder who did not produce good translation. In this scenario encoder is also getting effected due to decoder's bad performence.}
+
+This is a sharp observation, and the concern is valid --- it's related to the \textbf{credit assignment problem} in deep learning. But here's why it still works correctly:
+
+\textbf{The gradient naturally distributes blame via the chain rule.} When backprop flows from the decoder's loss back to the encoder, the magnitude and direction of the gradient reaching the encoder depends on how much the encoder's output actually contributed to the error. If the encoder produced a genuinely useful context vector and the decoder misused it, the gradient signal reaching the encoder will be relatively small --- most of the blame lands on the decoder's weights.
+
+\textbf{More importantly --- there is no independent definition of ``good encoder output''.} The encoder's job is not to produce some universally correct representation. Its job is to produce representations that are \textit{useful to this specific decoder}. The two components co-adapt during training. The encoder learns to produce what helps the decoder, and the decoder learns to use what the encoder provides. They are jointly optimized as one system.
+
+So the ``unfairness'' you're describing dissolves when you stop thinking of them as independent components and treat them as \textbf{one unified model} with shared parameters being optimized toward a single goal.
+
+That said, your concern does point to a real practical challenge --- in very deep or complex architectures, gradient signals can be noisy and credit assignment is imperfect. That's why techniques like careful initialization, gradient clipping, and residual connections exist.
+
+\bigskip
+
+\textbf{You said gradient naturally distributes blame via the chain rule. Do you mean that this issue is automatically handled by chain rule and we don't need to implement specific fix for this problem?}
+
+Yes, exactly. The chain rule during backpropagation \textbf{automatically} computes how much each parameter --- in both encoder and decoder --- contributed to the final loss. No special fix is needed for this specific issue.
+
+The gradient reaching any encoder weight is:
+
+$$\frac{\partial L}{\partial W_e} = \frac{\partial L}{\partial \text{decoder output}} \times \frac{\partial \text{decoder output}}{\partial c} \times \frac{\partial c}{\partial W_e}$$
+
+Each term in this chain naturally scales the gradient. If the encoder's contribution to the error was small, the middle term is small, and the gradient reaching $W_e$ is proportionally small. The math handles the blame distribution automatically.
+
+The techniques I mentioned --- gradient clipping, residual connections etc. --- exist to solve \textbf{different} problems like vanishing/exploding gradients in deep networks, not the credit assignment between encoder and decoder specifically. I shouldn't have lumped them in as if they were fixes for what you described.

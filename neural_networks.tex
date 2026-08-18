@@ -1,0 +1,160 @@
+% ============================================================
+%  Neural Network Foundations and Recurrent Neural Networks
+%  Sources: Karpathy RNN Blog, Colah LSTM Blog,
+%           Jurafsky & Martin Ch.9 (rnn_lstm.pdf),
+%           Sequence Learning Slides (3_sequence_learning_pptx.pdf)
+% ============================================================
+
+
+% ============================================================
+\section{Neural Network Foundations}
+% ============================================================
+
+\subsection{The Perceptron Formula}
+
+A perceptron computes $f(wx + b)$, where $w$ is the weight, $x$ is the input, $b$ is the
+bias, and $f$ is a non-linear activation function such as sigmoid, tanh, or ReLU. The
+linear combination $wx + b$ is first computed, and then passed through $f$ to introduce
+non-linearity.
+
+% -----------------------------------------------------------
+\subsection{A Neural Network as a Collection of Perceptrons}
+% -----------------------------------------------------------
+
+A neural network is essentially many perceptrons working together. Each node in a layer
+is one perceptron. For example, a layer with 3 nodes contains 3 perceptrons, each
+computing its own $f(wx + b)$.
+
+% -----------------------------------------------------------
+\subsection{How a Neural Network Learns Complex Non-Linear Patterns}
+% -----------------------------------------------------------
+
+A single perceptron applies one small non-linear transformation --- a single ``bend'' in
+the data. This alone cannot capture complex patterns. However, when hundreds of these
+bends are stacked across multiple layers, the combination becomes powerful.
+
+Think of it like origami: one fold of paper is simple, but many folds in different
+directions produce a complex 3D shape. Similarly:
+
+\begin{itemize}
+    \item Each neuron applies a tiny, simple transformation.
+    \item A layer of neurons applies many transformations simultaneously.
+    \item The next layer transforms those results again.
+    \item Layer after layer, the network builds increasingly abstract representations.
+\end{itemize}
+
+For example, in image classification:
+\begin{itemize}
+    \item Layer 1 detects edges.
+    \item Layer 2 combines edges into shapes.
+    \item Layer 3 combines shapes into features.
+    \item The final layer produces the class prediction.
+\end{itemize}
+
+No single step is intelligent. The depth and combination of simple transformations is
+what enables the network to learn complex patterns.
+
+% -----------------------------------------------------------
+\subsection{How Backpropagation Works}
+% -----------------------------------------------------------
+
+Training a neural network follows four steps:
+
+\begin{enumerate}
+    \item \textbf{Forward pass:} Data passes through all layers and the network produces
+          a prediction.
+    \item \textbf{Loss calculation:} The prediction is compared to the true label. The
+          loss is a single number representing how wrong the prediction was.
+    \item \textbf{Backpropagation:} Starting from the loss, blame is traced backwards
+          through the network using the \textbf{chain rule}. Each weight's contribution
+          to the error is quantified as a gradient.
+    \item \textbf{Gradient descent:} Each weight is nudged slightly in the direction that
+          reduces the loss. The size of the nudge is controlled by the \textbf{learning
+          rate}.
+\end{enumerate}
+
+This process repeats thousands of times. Over time, the weights converge to values that
+produce accurate predictions.
+
+% -----------------------------------------------------------
+\subsection{Which Layers Get Their Weights Updated}
+% -----------------------------------------------------------
+
+In a network with 1 input layer, 2 hidden layers, and 1 output layer, weight updates
+happen in all layers \textit{except} the input layer:
+
+\begin{itemize}
+    \item Output layer weights \checkmark
+    \item Hidden layer 2 weights \checkmark
+    \item Hidden layer 1 weights \checkmark
+    \item Input layer weights \texttimes\ \ (the input layer has no weights --- it only
+          passes data forward)
+\end{itemize}
+
+% -----------------------------------------------------------
+\subsection{Backpropagation vs.\ Gradient Descent --- An Important Distinction}
+% -----------------------------------------------------------
+
+These two terms are often confused but refer to separate steps:
+
+\begin{itemize}
+    \item \textbf{Backpropagation:} Computes the gradients --- how much each weight
+          contributed to the loss. It traces blame backwards using the chain rule.
+    \item \textbf{Gradient descent:} Uses those gradients to actually update the weights
+          --- nudging each weight to reduce the loss.
+\end{itemize}
+
+Backpropagation figures out \textit{how much} each weight is to blame. Gradient descent
+does the actual correction.
+
+% -----------------------------------------------------------
+\subsection{When Backpropagation Begins}
+% -----------------------------------------------------------
+
+Backpropagation cannot start until a loss value exists. The sequence is:
+
+\begin{enumerate}
+    \item Forward pass completes and an output is produced.
+    \item Loss is calculated by comparing the output to the true label.
+    \item Backpropagation begins, working backwards from the loss.
+\end{enumerate}
+
+% -----------------------------------------------------------
+\subsection{Input Layer Size for Tabular Data}
+% -----------------------------------------------------------
+
+For tabular data, the number of neurons in the input layer equals the number of features.
+For example, a dataset with 3 columns (features) requires 3 neurons in the input layer
+--- one per feature, all fed in simultaneously.
+
+% -----------------------------------------------------------
+\subsection{Stochastic Gradient Descent: Training Row by Row}
+% -----------------------------------------------------------
+
+For a tabular dataset with 10 rows, training with SGD proceeds as follows:
+
+\begin{enumerate}
+    \item Network processes row 1 (forward pass) $\to$ output produced $\to$ loss
+          calculated $\to$ backpropagation $\to$ gradient descent (weights updated).
+    \item Move to row 2 --- repeat the same process with the already-updated weights.
+    \item Continue through row 10.
+\end{enumerate}
+
+This approach --- updating weights after every single sample --- is called
+\textbf{Stochastic Gradient Descent (SGD)}.
+
+Other approaches include:
+\begin{itemize}
+    \item \textbf{Batch Gradient Descent:} Process all rows first, then update weights
+          once.
+    \item \textbf{Mini-batch Gradient Descent:} Process a small group of rows, then
+          update weights.
+\end{itemize}
+
+% -----------------------------------------------------------
+\subsection{What Is an Epoch}
+% -----------------------------------------------------------
+
+One \textbf{epoch} is one complete pass through the entire training dataset. For a
+10-row dataset, one epoch means the network has processed all 10 rows once.
+

@@ -1,0 +1,505 @@
+\section{Long Short-Term Memory (LSTM)}
+
+\subsection{The Problem That Made LSTMs Necessary}
+
+As shown in Section 2.11, the vanilla RNN suffers from vanishing gradients because
+the error signal must pass through a long chain of matrix multiplications and tanh
+activations. But there is a second, separate problem that is more architectural.
+
+The vanilla RNN's hidden state $h$ is asked to do two conflicting jobs at the same
+time: (1) carry long-term information across many steps, and (2) produce a useful
+working answer right now. These two goals fight each other. To make a good prediction
+at the current step, the hidden state gets heavily rewritten -- and in doing so, it
+erases information that earlier steps had carefully stored. The network has no way to
+hold on to something important from step 2 while making a prediction at step 47.
+
+LSTMs fix this by introducing a second, separate vector called the \textbf{cell state}.
+The cell state handles long-term memory. The hidden state handles the current working
+output. Two jobs, two separate tools.
+
+\subsection{The Key Insight: Two Memories Instead of One}
+
+The key structural change in an LSTM is splitting memory into two parts:
+
+\begin{itemize}
+    \item $c_t$ -- the \textbf{cell state}. This is the long-term memory. It travels
+    through the entire sequence and is updated gently, mostly through addition. Think
+    of it as a conveyor belt: things only get added to it or erased from it when
+    the network deliberately decides to do so.
+    \item $h_t$ -- the \textbf{hidden state}. This is the short-term working output.
+    It is produced at every step and passed forward, just like in the vanilla RNN.
+    It is also the vector that feeds into the output layer to make a prediction.
+\end{itemize}
+
+The key to this design is that the cell state update is \textit{additive}. Instead of
+being pushed through repeated matrix multiplications and tanh at every step, information
+flows through the cell state with very little distortion. This is what stops gradients
+from vanishing during backpropagation.
+
+\subsection{Intuition in Plain English}
+
+\subsubsection{Two notebooks}
+
+In Section 2.3, the RNN was described as a student keeping one notepad. An LSTM
+gives that student a second tool: a \textbf{filing cabinet}.
+
+\begin{itemize}
+    \item The \textbf{filing cabinet} ($c_t$) holds long-term facts: who the subject
+    of the sentence is, whether a verb is still expected, which language is being
+    discussed.
+    \item The \textbf{working notepad} ($h_t$) holds what the student is thinking
+    right now -- information useful for the current prediction.
+\end{itemize}
+
+At every word, the student follows three rules, controlled by learned \textit{gates}:
+
+\begin{enumerate}
+    \item \textbf{What to throw away?} Look at the filing cabinet and erase anything
+    no longer needed. (Forget gate.)
+    \item \textbf{What to file away?} Look at the current word and decide what is
+    worth keeping in the filing cabinet for later. (Input gate + candidate.)
+    \item \textbf{What to write on the working notepad?} Read the filing cabinet and
+    extract only what is needed for the current answer. (Output gate.)
+\end{enumerate}
+
+\subsubsection{What is a gate?}
+
+A gate is a filter. It is a vector of numbers between 0 and 1, produced by a sigmoid
+function applied to a linear combination of the current input and the previous hidden
+state. When you multiply a gate element-by-element with another vector (called
+\textit{element-wise multiplication}, written $\odot$), values near 1 pass through
+almost unchanged, while values near 0 are nearly erased. The network learns the gate
+weights during training, which means it learns \textit{what to keep and what to
+forget} directly from data -- something the vanilla RNN could never do explicitly.
+
+\subsection{Key Assumptions and What Happens When They Are Violated}
+
+LSTMs keep the same first and third assumptions as vanilla RNNs (order matters; the
+same rule applies at every step). Two assumptions change:
+
+\textbf{Assumption 2: Long-range dependencies can be learned.} The LSTM is
+specifically designed to retain information over long sequences. The cell state can,
+in principle, carry a signal from step 1 all the way to step 100 without it being
+overwritten. However, this relies on the forget gate learning to stay near 1 for
+important information. If training does not produce this behavior -- for instance due to
+very long sequences or small datasets -- the dependency can still be lost.
+
+\textbf{Assumption 4: Two fixed-size vectors are large enough.} The LSTM has a
+cell state $c$ and a hidden state $h$, both of fixed size. There is still a memory
+capacity limit. If a sequence contains more information than fits in these vectors,
+older information will still be overwritten. The difference from vanilla RNNs is that
+the overwriting is now \textit{deliberate and learned}, rather than accidental.
+
+\subsection{Edge Cases Where LSTMs Fail Differently From Vanilla RNNs}
+
+\textbf{Very long sequences.} As noted in Section 2.6, even LSTMs degrade on
+sequences of thousands of steps. The forget gate can leak small amounts of
+information at every step; over hundreds of steps, this compounds into meaningful
+loss.
+
+\textbf{Forget gate initialized incorrectly.} The forget gate is critical. If its
+weights start too close to zero (producing outputs near 0), the network forgets
+everything at every step before it has learned not to -- essentially collapsing into
+a vanilla RNN for the first few training iterations. In practice, forget gate biases
+are often initialized to 1 rather than 0 to avoid this.
+
+\textbf{Tasks requiring future context.} An LSTM is still unidirectional by default.
+It cannot look ahead. The same limitation described in Section 2.6 for vanilla RNNs
+applies here. A Bidirectional LSTM (Section 4) is required for those tasks.
+
+\subsection{Known Weaknesses and Failure Modes}
+
+\textbf{Roughly four times more parameters.} An LSTM has four weight matrices
+(one per gate/candidate operation) instead of one. With a vocabulary of 30 and hidden
+size of 5, the vanilla RNN had 190 parameters; an LSTM with the same sizes has
+approximately 700. This means the LSTM needs more training data to fit well
+and is more prone to overfitting on small datasets.
+
+\textbf{More computation per step.} Each LSTM step computes six equations instead
+of one. Each of those equations involves matrix multiplication, meaning the LSTM is
+roughly four times slower per step than a vanilla RNN of the same hidden size.
+
+\textbf{Still cannot be parallelized across time.} Step $t$ still depends on step
+$t-1$. The sequential bottleneck described in Section 2.7 remains -- the cell state
+does not change this.
+
+\textbf{Harder to diagnose.} When a vanilla RNN makes a wrong prediction, there is
+one hidden state to inspect. In an LSTM, there are six intermediate computations per
+step. Figuring out which gate made the wrong call is much harder.
+
+\subsection{How an LSTM Processes a Sequence}
+
+The overall flow through a sequence is identical to what was described in Section 2.9 --
+one element at a time, left to right, producing a new state at each step. The difference
+is that each step now has \textit{two} state vectors carried forward: $h_t$ (the
+hidden state) and $c_t$ (the cell state). Both start as the zero vector. Both are
+discarded when the sequence ends and rebuilt from scratch for the next sequence.
+
+At every step $t$, the LSTM runs six equations in order. First it computes the three
+gate/candidate values using only the current input $x_t$ and the previous hidden state
+$h_{t-1}$. Then it updates the cell state. Then it uses the updated cell state to
+produce the new hidden state. Finally, the hidden state produces the output prediction
+exactly as in the vanilla RNN:
+\[
+\hat{o}^{(t)} = \text{softmax}(V h_t)
+\]
+The output equation has not changed. Only the way $h_t$ is produced has changed.
+
+\subsection{End-to-End Trace: The Six Equations}
+
+We trace one time step of an LSTM on the same architecture used in Section 2.10:
+vocabulary size $= 30$, hidden size $= 5$, output classes $= 3$ (DET, ADJ, NOUN).
+At step $t$, the inputs are $x_t$ (shape $[30 \times 1]$), $h_{t-1}$ (shape
+$[5 \times 1]$), and $c_{t-1}$ (shape $[5 \times 1]$).
+
+\textbf{A note on notation.} The four gate and candidate equations below follow Colah's blog: $h_{t-1}$ and $x_t$ are \textit{concatenated} into one longer vector $[h_{t-1},\, x_t]$, and a single weight matrix $W$ is applied to it. This is equivalent to the split form used in some textbooks, where two separate matrices are written: $U \cdot h_{t-1} + W_{\text{split}} \cdot x_t$. The single $W$ in the concatenation form is just $[U \mid W_{\text{split}}]$ stitched together side by side into one bigger matrix -- multiplying it against the concatenated vector produces the exact same result. Either form is correct; only the notation differs.
+
+\subsubsection{Step 1: Forget Gate}
+
+\[
+f_t = \sigma(W_f \cdot [h_{t-1},\, x_t])
+\]
+
+\begin{itemize}
+    \item $f_t$ -- the forget gate vector, shape $[5 \times 1]$. Each number is
+    between 0 and 1.
+    \item $\sigma$ -- the sigmoid function. It takes any number and squashes it into
+    the range $(0, 1)$.
+    \item $W_f$ -- the forget gate's single weight matrix, shape $[5 \times 35]$.
+    It is applied to the full concatenated vector.
+    \item $[h_{t-1},\, x_t]$ -- the concatenation of the previous hidden state
+    ($[5 \times 1]$) and the current input ($[30 \times 1]$), stacked into one
+    vector of shape $[35 \times 1]$.
+\end{itemize}
+
+Look at where the network has been ($h_{t-1}$) and what just arrived ($x_t$),
+combine them with learned weights, and pass through sigmoid to produce a value
+between 0 and 1 for every slot in the cell state. A value of 1 means ``keep this
+slot completely.'' A value of 0 means ``erase this slot completely.''
+
+\subsubsection{Step 2: Cell State Candidate}
+
+\[
+g_t = \tanh(W_g \cdot [h_{t-1},\, x_t])
+\]
+
+\begin{itemize}
+    \item $g_t$ -- the candidate vector: proposed new information to write into the
+    cell state, shape $[5 \times 1]$. Values range from $-1$ to $1$.
+    \item $\tanh$ -- the hyperbolic tangent function. Squashes values into
+    $(-1, 1)$, allowing both positive and negative contributions.
+    \item $W_g$ -- the candidate's weight matrix, shape $[5 \times 35]$, applied to
+    the concatenated vector $[h_{t-1},\, x_t]$.
+\end{itemize}
+
+This is the same kind of computation as the vanilla RNN's hidden state update from
+Section 2.10, but here it produces a \textit{proposal} rather than a final answer.
+It asks: ``Given everything seen so far and what just arrived, what new information
+might be worth remembering?'' The next gate decides which parts of this proposal
+actually get written.
+
+\subsubsection{Step 3: Input Gate}
+
+\[
+i_t = \sigma(W_i \cdot [h_{t-1},\, x_t])
+\]
+
+\begin{itemize}
+    \item $i_t$ -- the input gate vector, shape $[5 \times 1]$. Numbers between
+    0 and 1.
+    \item $W_i$ -- the input gate's weight matrix, shape $[5 \times 35]$, applied to
+    the concatenated vector $[h_{t-1},\, x_t]$.
+\end{itemize}
+
+The forget gate decided what to erase from old memory. The input gate now decides
+which parts of the candidate $g_t$ are actually worth writing into the cell state.
+A value of 1 means ``yes, file this away.'' A value of 0 means ``ignore this
+candidate slot.'' Together, Steps 2 and 3 implement a learned write operation to the
+filing cabinet.
+
+\subsubsection{Step 4: Cell State Update}
+
+\[
+c_t = (i_t \odot g_t) + (f_t \odot c_{t-1})
+\]
+
+\begin{itemize}
+    \item $c_t$ -- the updated cell state (filing cabinet) after this step, shape
+    $[5 \times 1]$.
+    \item $i_t \odot g_t$ -- the new information to add: the candidate $g_t$ filtered
+    by the input gate $i_t$.
+    \item $f_t \odot c_{t-1}$ -- the surviving old information: the previous cell
+    state $c_{t-1}$ filtered by the forget gate $f_t$.
+    \item $\odot$ -- element-wise multiplication (Hadamard product). Multiply
+    corresponding elements of two same-sized vectors. Position $i$ of the result
+    is just $(i_t)_i \times (g_t)_i$.
+    \item $c_{t-1}$ -- the cell state from the previous step.
+\end{itemize}
+
+Take the old filing cabinet ($c_{t-1}$), erase what the forget gate said to erase,
+then add what the input gate approved from the new candidates. This operation is an
+\textit{addition}, not a matrix multiplication through tanh. This matters enormously
+for training: when gradients flow backward through this equation from $c_t$ to
+$c_{t-1}$, they only pass through the forget gate values $f_t$ -- not through
+repeated weight matrix multiplications. This is the gradient highway that prevents
+vanishing gradients.
+
+\subsubsection{Step 5: Output Gate}
+
+\[
+o_t = \sigma(W_o \cdot [h_{t-1},\, x_t])
+\]
+
+\begin{itemize}
+    \item $o_t$ -- the output gate vector, shape $[5 \times 1]$. Numbers between
+    0 and 1.
+    \item $W_o$ -- the output gate's weight matrix, shape $[5 \times 35]$, applied to
+    the concatenated vector $[h_{t-1},\, x_t]$.
+\end{itemize}
+
+The cell state now holds the updated long-term memory. The output gate asks: ``Of
+everything stored in the filing cabinet right now, which parts are actually useful
+for the current working answer?'' Not all long-term memory is relevant at every step.
+The output gate learns to select only the relevant parts.
+
+\subsubsection{Step 6: New Hidden State}
+
+\[
+h_t = o_t \odot \tanh(c_t)
+\]
+
+\begin{itemize}
+    \item $h_t$ -- the new hidden state (working notepad) for this step, shape
+    $[5 \times 1]$.
+    \item $\tanh(c_t)$ -- the cell state squeezed into $(-1, 1)$ to keep values
+    bounded.
+    \item $o_t \odot \tanh(c_t)$ -- the cell state, filtered by the output gate:
+    only the relevant parts survive.
+\end{itemize}
+
+Squeeze the filing cabinet through tanh to normalize the values, then use the output
+gate to keep only what matters right now. The result $h_t$ is the new working
+notepad. It gets passed forward to the next step as $h_{t-1}$, and it also feeds into
+the output equation $\hat{o}^{(t)} = \text{softmax}(V h_t)$ to make the current
+prediction. The hidden state still plays exactly the same external role as in a vanilla
+RNN -- only how it is produced has changed.
+
+\subsection{BPTT in LSTM: The Gradient Highway}
+
+Section 2.11 showed that in vanilla BPTT, the gradient reaching step 1 in a 5-step
+sequence is the product $G_5 \times G_4 \times G_3 \times G_2 \times G_1$. If each
+$G_i < 1$, this product vanishes to zero.
+
+In an LSTM, the gradient with respect to the cell state follows a different path. Going
+backward from $c_t$ to $c_{t-1}$ using the update equation:
+\[
+c_t = (i_t \odot g_t) + (f_t \odot c_{t-1})
+\]
+the gradient of $c_t$ with respect to $c_{t-1}$ is simply $f_t$ -- the forget gate
+values. There is no matrix multiplication, no tanh squashing. If the forget gate
+learns to output values near 1 for slots it wants to preserve, the gradient for those
+slots flows backward nearly unchanged, step after step. Early time steps receive a
+strong, uncorrupted learning signal for the first time.
+
+This does not mean gradients never vanish in an LSTM. If the forget gate consistently
+outputs values near 0 (which erases memory), the gradients also get erased in the same
+direction. But unlike the vanilla RNN, the LSTM can \textit{learn} to keep the forget
+gate near 1 for important information -- and when it does, early time steps receive a
+gradient.
+
+\subsection{The Weight Matrices in an LSTM}
+
+The vanilla RNN had three weight matrices: $W$ (input to hidden), $U$ (hidden to
+hidden), and $V$ (hidden to output). An LSTM has five (one per gate/candidate, plus
+output):
+
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Operation} & \textbf{Matrix} & \textbf{Connects} \\
+\hline
+Forget gate & $W_f$ & $[h_{t-1},\, x_t]$ $\to$ forget filter \\
+\hline
+Candidate memory & $W_g$ & $[h_{t-1},\, x_t]$ $\to$ candidate \\
+\hline
+Input gate & $W_i$ & $[h_{t-1},\, x_t]$ $\to$ input filter \\
+\hline
+Output gate & $W_o$ & $[h_{t-1},\, x_t]$ $\to$ output filter \\
+\hline
+Output prediction & $V$ & hidden state $\to$ output labels \\
+\hline
+\end{tabular}
+\end{center}
+
+All four gate and candidate matrices start with small random values and are learned
+through BPTT, exactly like $W$ in the vanilla RNN. The output matrix $V$ is
+identical to the one in the vanilla RNN -- it has not changed. None of these matrices
+change while the LSTM is reading a single sequence; they are only updated after the
+loss is computed.
+
+\subsection{Shape Compatibility in an LSTM}
+
+Using the same concrete numbers as Section 2.14: vocabulary size $= 30$, hidden
+size $= 5$, output classes $= 3$.
+
+The input vector $x_t$ is $[30 \times 1]$. The previous hidden state $h_{t-1}$ is
+$[5 \times 1]$. The previous cell state $c_{t-1}$ is $[5 \times 1]$.
+
+Each gate or candidate equation applies $W \cdot [h_{t-1},\, x_t]$ and must produce
+a $[5 \times 1]$ result (same shape as the hidden state). The concatenated vector
+$[h_{t-1},\, x_t]$ has shape $[35 \times 1]$ ($5 + 30 = 35$). Applying the shape
+rule from Section 2.14:
+
+\begin{itemize}
+    \item All $W$ matrices ($W_f, W_g, W_i, W_o$): must be $[5 \times 35]$, because
+    they take a $[35 \times 1]$ concatenated vector and must produce a $[5 \times 1]$
+    output.
+    \[
+    [5 \times 35] \cdot [35 \times 1] = [5 \times 1] \checkmark
+    \]
+    \item All gate and candidate vectors ($f_t, g_t, i_t, o_t$): shape $[5 \times 1]$
+    -- same size as the hidden state.
+    \item Cell state $c_t$: shape $[5 \times 1]$ -- \textit{same shape as the hidden
+    state}. This is required because $o_t \odot \tanh(c_t)$ is an element-wise
+    multiplication, which needs both vectors to be the same size.
+    \item Output matrix $V$: $[3 \times 5]$ -- unchanged from the vanilla RNN.
+\end{itemize}
+
+With hidden size 5: each $W$ matrix has $5 \times 35 = 175$ values. Four operations
+$\times$ $175 = 700$ parameters for the gates and candidate, plus $15$ for $V$. That
+is roughly $700$ total, compared to about $190$ for a vanilla RNN with the same
+dimensions. (This matches the split-form count: $5{\times}5 + 5{\times}30 = 175$ per
+gate -- the two forms have identical parameter counts.)
+
+\subsubsection{Why the Gate Matrices Are Not Square}
+
+In the vanilla RNN, $U$ was square ($[5 \times 5]$) because it took only $h_{t-1}$
+($[5 \times 1]$) as input. Here, each $W$ takes the concatenated vector
+$[h_{t-1},\, x_t]$ ($[35 \times 1]$) as input and produces a $[5 \times 1]$ output,
+so the shape is $[5 \times 35]$ -- rectangular, not square. The output size is
+determined by the hidden size (5); the input size is hidden size + vocabulary size
+($5 + 30 = 35$). These are different numbers, so the matrix cannot be square.
+
+\subsubsection{Initialization}
+
+All four gate and candidate matrices start with small random values (drawn from a
+Gaussian or uniform distribution), just like $W$ and $V$ in the vanilla RNN
+(Section 2.16). One practical exception: the bias vector of the forget gate is often
+initialized to $1$ rather than $0$. This makes the forget gate start near $\sigma(1)
+\approx 0.73$ instead of $\sigma(0) = 0.5$, giving the network a slight bias toward
+keeping information at the start of training rather than erasing it immediately.
+
+\subsection{The Cell State and Hidden State: Shape and Values}
+
+\subsubsection{Shape}
+
+Both $h$ and $c$ have shape $[\text{hidden size} \times 1]$. The hidden size is a
+hyperparameter you choose before training (same as in the vanilla RNN). Because $h$
+and $c$ must be the same size for the element-wise multiplications in the gate
+equations to work, you cannot choose a different size for each.
+
+\subsubsection{Values}
+
+Neither $h$ nor $c$ are learned parameters. They are recomputed from scratch at every
+time step during the forward pass:
+
+\begin{itemize}
+    \item $h^{(0)}$ is set to the zero vector. No short-term memory before the
+    sequence starts.
+    \item $c^{(0)}$ is set to the zero vector. No long-term memory before the
+    sequence starts.
+    \item $h^{(t)}$ is computed from $c^{(t)}$ and $o_t$ at every step.
+    \item $c^{(t)}$ is computed from $c^{(t-1)}$, $f_t$, $i_t$, and $g_t$ at every
+    step.
+\end{itemize}
+
+After a sequence is fully processed, both $h$ and $c$ are discarded. The next
+sequence starts again from the zero vector. What gets learned are the eight weight
+matrices (and $V$) -- not $h$ or $c$ themselves.
+
+\subsection{Cost and Tradeoffs: LSTM vs. Vanilla RNN}
+
+The tradeoffs here are relative to the vanilla RNN specifically. The comparison
+between RNNs and feedforward networks is already covered in Section 2.12.
+
+\textbf{What you gain over vanilla RNN:}
+
+\begin{itemize}
+    \item \textbf{Explicit, learnable memory management.} The forget and input gates
+    learn, from data, exactly what to keep and what to discard. The vanilla RNN had no
+    such explicit mechanism -- it just overwrote the hidden state at every step.
+    \item \textbf{A dedicated long-term memory lane.} The cell state can carry a fact
+    (e.g., ``the subject is plural'') for many steps without it being overwritten by
+    intermediate computations. The vanilla RNN had no separate channel for this.
+    \item \textbf{Gradient highway.} Gradients can reach early steps through the cell
+    state's additive update, allowing the network to learn long-range dependencies that
+    the vanilla RNN could not.
+\end{itemize}
+
+\textbf{What you give up compared to vanilla RNN:}
+
+\begin{itemize}
+    \item \textbf{Simplicity.} Six equations per step instead of one. Much harder to
+    understand, implement, and debug.
+    \item \textbf{Speed per step.} Each step requires four matrix multiplications
+    (one per gate/candidate) instead of one. This makes each step roughly four times
+    more expensive.
+    \item \textbf{Parameter count.} Roughly four times more parameters than a vanilla
+    RNN of the same hidden size. More parameters need more training data and take
+    longer to train.
+    \item \textbf{Risk of overfitting.} More parameters means the model can memorize
+    training examples more easily on small datasets.
+\end{itemize}
+
+%===================================================================
+
+
+\subsection{Forget Gate Output: Vector, Not a Scalar or Matrix}
+The forget gate produces a vector $f_t$ with the same shape as the cell state $c_t$. In an architecture with hidden size 5, $f_t$ is a $[5 \times 1]$ vector where every element lies between 0 and 1, produced by the sigmoid function. Each position in $f_t$ corresponds to one dimension of the cell state. When $f_t$ is multiplied element-wise with $c_{t-1}$, each dimension of the cell state is independently scaled --- a value near 1 keeps that dimension, near 0 erases it. The forget gate therefore produces one decision per dimension, not a single global decision for the entire cell state.
+
+\subsection{The Forget Gate Does Not Remember x(t): Division of Responsibility}
+The forget gate is not responsible for remembering the current input $x(t)$. Its sole job is to decide what to erase from old memory $c_{t-1}$. Writing $x(t)$ into memory is handled by the input gate and candidate gate together. The candidate $g_t = \tanh(W_g \cdot [h_{t-1}, x_t])$ proposes what is worth remembering from $x(t)$, and the input gate $i_t = \sigma(W_i \cdot [h_{t-1}, x_t])$ filters that proposal. Their product $i_t \odot g_t$ is what actually gets written into the cell state. The forget gate plays no role in this write operation.
+
+\subsection{Blocking Unimportant Current Input: The Role of the Input Gate}
+If $x(t)$ is unimportant and should not be remembered, the forget gate does not handle this. The input gate $i_t$ learns to output values near 0 for all dimensions, making $i_t \odot g_t \approx 0$. Nothing from $x(t)$ enters the cell state. The forget gate remains focused on old memory regardless of what $x(t)$ is. The mental model is: the forget gate is an editor of the past; the input gate is a filter on the present.
+
+\subsection{The Forget Gate Exclusively Controls the Old Cell State}
+The forget gate only operates on $c_{t-1}$. It produces $f_t$, which is element-wise multiplied with the previous cell state:
+\[
+f_t \odot c_{t-1}
+\]
+Values in $f_t$ near 1 keep the corresponding dimension of old memory; values near 0 erase it. That is the entirety of what the forget gate does --- it has no involvement in writing new information into $c_t$.
+
+\subsection{Why the Forget Gate Takes x(t) and h\textsubscript{t-1} as Input}
+To decide what to erase from old memory, the forget gate needs to know what is happening right now. Without current context, it would produce the same $f_t$ at every timestep regardless of the sequence, making it useless. $x(t)$ tells the gate what just arrived --- for example, a new subject signals that the old subject's information in $c_{t-1}$ is now stale. $h_{t-1}$ provides the accumulated context so far, enabling a more nuanced erasure decision. Importantly, these inputs do not contribute to what gets written into memory; they only inform what old memory is no longer relevant.
+
+\subsection{There Are No Labeled Slots in the Cell State}
+The cell state $c_t$ is simply a vector of floating point numbers. There are no labeled or separated slots for specific concepts like gender or subject. During training, the network learns weight matrices such that certain dimensions of $c_t$ tend to encode certain patterns, but this emerges from the data and is distributed across dimensions in an entangled way. The language of named slots is a conceptual simplification for building intuition. The underlying math is just vectors and learned weights.
+
+\subsection{How Weight Matrices Determine Forget Gate Behavior}
+A high positive value from $W_f \cdot [h_{t-1}, x(t)]$ does not inherently mean the current input is important and old memory should be erased. The weights encode whatever the task requires, not a generic notion of importance. $W_f$ is a dedicated weight matrix trained specifically to answer: ``Given what I see right now, should I keep old memory?'' It learns to produce high positive values for inputs that signal continuity (keep old memory) and low or negative values for inputs that signal a context shift (erase old memory). The input gate has its own separate weight matrix $W_i$ that learns independently. The same $x(t)$ can cause $W_i$ to produce high values (write new info) while simultaneously causing $W_f$ to produce low values (erase old info). There is no contradiction because each gate's weight matrix learns a different function from the same input.
+
+\subsection{The Input Gate and Candidate Gate: Controlling How Much x(t) Gets Written}
+The candidate gate $g_t = \tanh(W_g \cdot [h_{t-1}, x_t])$ proposes new information to write into the cell state, with values between $-1$ and $1$. The input gate $i_t = \sigma(W_i \cdot [h_{t-1}, x_t])$ produces a scaling vector between 0 and 1. Their element-wise product $i_t \odot g_t$ determines what is actually added to $c_t$:
+\[
+c_t = (i_t \odot g_t) + (f_t \odot c_{t-1})
+\]
+For each dimension, $i_t$ near 1 allows that dimension of $g_t$ to pass through fully; $i_t$ near 0 suppresses it. The candidate decides \textit{what} to potentially write; the input gate decides \textit{how much} of each dimension actually gets written.
+
+\subsection{Why the Candidate Gate Uses tanh Instead of Sigmoid}
+Sigmoid outputs values in $(0, 1)$ and is suited for gates that make filtering decisions --- how much to keep or write. The candidate gate encodes content, not a decision. Using sigmoid would restrict $g_t$ to only positive values, meaning the cell state could only accumulate upward through the write operation and could never push a dimension's value down. Tanh outputs values in $(-1, 1)$, allowing the candidate to encode both positive and negative contributions. This gives the network the expressive power to increase or decrease any dimension of the cell state as needed.
+
+\subsection{The Input Gate Sigmoid as a Magnitude Controller}
+The sigmoid in the input gate outputs values between 0 and 1, acting purely as a scaler on the candidate $g_t$. It contributes no content of its own. Its only role is to control the magnitude of what the candidate proposed, dimension by dimension. It answers: ``how much of each dimension of $g_t$ should actually be written into the cell state?''
+
+\subsection{The Output Gate Sigmoid: Filtering What Gets Exposed as Hidden State}
+The output gate's sigmoid decides which dimensions of the current cell state $c_t$ should be exposed as the hidden state $h_t$:
+\[
+h_t = o_t \odot \tanh(c_t)
+\]
+$\tanh(c_t)$ squashes the cell state into $(-1, 1)$, representing the content available to output. $o_t$ scales each dimension: near 1 exposes that dimension, near 0 suppresses it. The cell state holds everything the LSTM is remembering long-term, but not all of it is relevant for the current prediction. The output gate filters out only what is needed right now and passes it as $h_t$, which then feeds into the prediction. The pattern is consistent across all three gates --- sigmoid always answers a ``how much'' question, differing only in what it filters:
+\begin{itemize}
+    \item Forget gate filters the old cell state $c_{t-1}$
+    \item Input gate filters the candidate $g_t$
+    \item Output gate filters the current cell state $c_t$
+\end{itemize}

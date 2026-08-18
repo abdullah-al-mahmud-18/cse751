@@ -1,0 +1,914 @@
+\section{Recurrent Neural Networks (RNNs)}
+% ============================================================
+
+For sequential data such as sentences, the order of elements matters --- something a
+standard feedforward neural network cannot capture. Unlike tabular data where all
+features are fed in at once, an RNN processes one element at a time across multiple
+\textbf{time steps}, maintaining a \textbf{hidden state} (memory) that carries
+information from previous steps forward.
+
+% -----------------------------------------------------------
+\subsection{The Problem That Made RNNs Necessary}
+% -----------------------------------------------------------
+
+Before RNNs existed, the dominant tool for pattern recognition was the feedforward neural
+network. A feedforward network takes a fixed-size input, passes it through several layers,
+and produces a fixed-size output. It has no memory. Every prediction is made completely
+from scratch.
+
+This works perfectly well for tasks where the entire input is available all at once and
+order does not matter --- for example, classifying whether a photo contains a cat. But
+it fails badly the moment you need to process a \textbf{sequence}: data that arrives one
+piece at a time, where the meaning of each piece depends on what came before it.
+
+Consider the task of predicting the next word in a sentence. If you have read ``The clouds
+are in the\ldots,'' the next word is almost certainly \textit{sky}. But a feedforward
+network sees only the current word --- it has already forgotten ``clouds,'' ``are,'' and
+``in.'' A related problem appeared in speech recognition, machine translation, handwriting
+generation, and any other task where time and order matter.
+
+The specific failure was this: \textbf{there was no mechanism to carry information
+forward across time steps.} Each prediction ignored all prior history.
+Feedforward networks were, as Karpathy put it, ``doomed from the get-go by a fixed
+number of computational steps.''
+
+% -----------------------------------------------------------
+\subsection{The Key Insight That Made RNNs Work}
+% -----------------------------------------------------------
+
+The insight was simple but powerful: \textbf{add a loop}. Let the network feed its own
+output from step $t$ back as an additional input at step $t{+}1$.
+
+This creates a \textbf{hidden state} --- a vector of numbers that the network updates at
+every step and carries forward. The hidden state is a running, compressed summary of
+everything the network has seen so far. At each new time step, the network looks at two
+things: the new input arriving right now, and the hidden state from the previous step
+(which already summarizes all prior inputs). It combines both to produce a new hidden
+state and a prediction, then passes the hidden state forward.
+
+Critically, the \textbf{same set of weights} is reused at every time step. The network
+does not learn a separate function for step 1, another for step 2, and so on. It learns
+one general rule: ``how to update my running summary given a new input.'' This makes the
+architecture work on sequences of \textit{any} length.
+
+% -----------------------------------------------------------
+\subsection{Intuition in Plain English}
+% -----------------------------------------------------------
+
+\subsubsection{The core idea: a brain that reads one word at a time and keeps notes}
+
+Imagine you are reading a mystery novel, but with a strange rule: you can see only
+one word at a time on a notepad, and after reading each word you must erase it. The
+challenge is to understand the story.
+
+To follow along, you would have to keep notes. Each time you read a new word, you
+update your notes: combine the new word with what you already wrote down, then produce
+a new, updated set of notes. You carry those notes forward to the next word. The notes
+are not a full transcript --- they are a compressed summary. Maybe your notes say:
+``butler was mentioned, diamond is missing, it is raining.'' That summary is your
+memory.
+
+That is exactly what an RNN does. The notepad is called the \textbf{hidden state}.
+At every step, the RNN reads one new piece of input (say, one word), combines it with
+what is already in the notepad, writes a new updated notepad, and then uses that notepad
+to make a prediction --- like guessing the next word --- before moving on.
+
+\subsubsection{Why the same rule every time?}
+
+The RNN uses exactly the same rule for updating its notepad at every single step,
+no matter how long the sequence is. Think of a person who has developed a habit: every
+time they hear something new, they do the same thing --- compare it to what they already
+know, update their mental model, and move on. The habit does not change; only the
+content of their memory does.
+
+\subsubsection{The loop}
+
+What makes an RNN different from a regular neural network is the loop.
+A regular neural network is like a camera that takes one photo and gives one label.
+An RNN is like a video camera that watches a movie frame by frame, updating its
+understanding after every frame, and can predict what comes next at any point.
+
+% -----------------------------------------------------------
+\subsection{Key Assumptions and What Happens When They Are Violated}
+% -----------------------------------------------------------
+
+\textbf{Assumption 1: Order matters.}
+RNNs are built for data where position in the sequence carries meaning. If your data has
+no meaningful order --- for example, a bag of independent measurements --- the recurrence
+adds no value. A feedforward network would work equally well with less complexity.
+
+\textbf{Assumption 2: Dependencies are mostly local or medium-range.}
+The vanilla RNN theoretically passes information over unlimited time steps, but in
+practice the signal from early steps gets diluted as it travels through many updates.
+When critical dependencies span dozens or hundreds of steps, vanilla RNNs fail.
+This was documented rigorously by Bengio et al.\ (1994) and Hochreiter (1991), and
+it is the primary motivation behind LSTMs and GRUs.
+
+\textbf{Assumption 3: The same rule applies at every position.}
+Because the same weight matrices are used at every step, the network assumes that the
+same computation that is useful at step 1 is also useful at step 100. If the
+statistical properties of the sequence shift dramatically over time, the shared weights
+may not generalize well across all positions.
+
+\textbf{Assumption 4: The hidden state is large enough to hold what matters.}
+The hidden state is a fixed-size vector. If the sequence contains more information than
+fits in that vector, older information will be overwritten. The network has a
+\textbf{memory bottleneck}: it must decide what to keep and what to discard, and with
+a vanilla RNN, this decision is not learned explicitly --- recent inputs simply tend to
+dominate.
+
+% -----------------------------------------------------------
+\subsection{When the Method Breaks Down}
+% -----------------------------------------------------------
+
+\textbf{Vanishing and exploding gradients.}
+Training an RNN requires sending an error signal backward through every time step.
+For a sequence of length $T$, this error must pass through $T$ matrix multiplications.
+If the dominant values in the weight matrix are less than 1, repeated multiplication
+shrinks the error signal exponentially to zero --- \textbf{gradients vanish} and early
+time steps receive almost no learning signal. The network becomes unable to learn that
+something at step 1 matters for the prediction at step 50. Conversely, if the values
+are greater than 1, the error signal grows exponentially --- \textbf{gradients explode},
+causing wildly unstable updates.
+
+\textbf{Long-range dependencies.}
+As the Colah blog explains: predicting the word \textit{French} at the end of ``I grew
+up in France\ldots\ I speak fluent \textit{French}'' requires remembering
+\textit{France} from many steps earlier. The vanilla RNN fails this reliably once the
+gap between the clue and the prediction grows large.
+
+\textbf{Long sequences.}
+Processing is sequential --- each step depends on the previous one, so no step can be
+computed until the previous one finishes. This prevents parallelization, making very
+long sequences slow to process at training time.
+
+\textbf{Autoregressive error accumulation.}
+When generating sequences (e.g., generating text one character at a time), the model
+feeds its own previous output as the next input. Any early mistake compounds forward.
+Karpathy noted that his character-level LSTM could produce locally coherent output but
+would lose global structure: it might open a \verb|\begin{proof}| and close it with
+\verb|\end{lemma}|, because the dependency was too long-range to survive in the hidden
+state.
+
+% -----------------------------------------------------------
+\subsection{Edge Cases Where RNNs Fail}
+% -----------------------------------------------------------
+
+\textbf{Very short sequences.}
+On sequences of length one or two, the recurrent connection adds no benefit --- there
+is no history to carry. A simpler feedforward network is just as capable.
+
+\textbf{Very long sequences.}
+For sequences of thousands of steps, vanilla RNNs fail completely due to vanishing
+gradients. Even LSTMs degrade significantly. Transformer models, which can attend to
+any position directly, generally outperform RNNs on very long sequences.
+
+\textbf{Tasks requiring future context.}
+A standard (unidirectional) RNN at step $t$ only knows about inputs up to step $t$.
+For tasks like part-of-speech tagging, where knowing what comes \textit{after} a word
+helps identify it, a unidirectional RNN is structurally limited. Bidirectional RNNs
+address this at the cost of requiring the full sequence upfront.
+
+\textbf{Very small datasets.}
+Like all deep learning models, RNNs are data-hungry. With few training examples, they
+overfit easily and fail to learn generalizable sequence patterns.
+
+\textbf{Variable-length sequences in a batch.}
+Because time steps must be processed sequentially, batching sequences of different
+lengths requires padding shorter sequences to match the longest one. This wastes
+computation and can introduce noise into the hidden states.
+
+% -----------------------------------------------------------
+\subsection{Known Weaknesses and Failure Modes}
+% -----------------------------------------------------------
+
+\textbf{Cannot be parallelized across time.}
+Unlike feedforward networks or transformers, RNNs process sequences one step at a time.
+Step $t{+}1$ cannot begin until step $t$ is complete. This makes RNNs much slower to
+train on modern GPUs, which are designed for massively parallel computation.
+
+\textbf{Memory bottleneck.}
+Everything the network needs to remember is compressed into one fixed-size vector.
+Information from early steps competes with recent information, and older information
+tends to be overwritten. The network has no explicit mechanism to choose what to keep.
+
+\textbf{Practical forgetting.}
+Even when gradients do not completely vanish, the learned hidden state in a vanilla RNN
+tends to reflect recent inputs far more strongly than distant ones. Information is
+progressively diluted at each step.
+
+\textbf{Difficult to train.}
+Gradient clipping (to prevent exploding gradients), careful weight initialization,
+and learning rate tuning are all necessary in practice. Training is less stable than
+training feedforward networks.
+
+\textbf{Lack of interpretability.}
+The hidden state is a dense vector of floating-point numbers with no direct
+human-readable meaning. It is difficult to inspect what the network is ``remembering''
+at any given step.
+
+% -----------------------------------------------------------
+\subsection{RNN Input Representation}
+% -----------------------------------------------------------
+
+The number of neurons in the RNN input layer is determined by how each word is
+\textit{represented}, not by the number of words in the sentence. The number of words
+determines the number of time steps, not the input layer size.
+
+Common representations:
+\begin{itemize}
+    \item \textbf{One-hot encoding:} A vocabulary of 1000 words $\Rightarrow$ 1000 input
+          neurons. At each time step, the vector for the current word is fed in --- all
+          zeros except for a single 1 at the position corresponding to that word. If the
+          vocabulary contains 30 unique words, the input layer will have \textbf{30
+          neurons}.
+    \item \textbf{Word embeddings:} Each word compressed into a dense vector of, say,
+          300 numbers $\Rightarrow$ 300 input neurons. Modern systems prefer this over
+          one-hot encoding.
+\end{itemize}
+
+At each time step, one word's representation is fed into the same input layer.
+The input layer size stays fixed regardless of sequence length.
+
+% -----------------------------------------------------------
+\subsection{How an RNN Processes and Trains on a Sequence}
+% -----------------------------------------------------------
+
+\subsubsection{Step-by-step sequence processing}
+
+For a sentence with 5 words, the RNN processes it one word at a time:
+\begin{itemize}
+    \item Step 1: Feed word 1 $\to$ hidden layers update memory
+    \item Step 2: Feed word 2 $\to$ hidden layers use memory from step 1
+    \item $\vdots$
+    \item Step 5: Feed word 5 $\to$ final output produced
+\end{itemize}
+
+\subsubsection{What a ``step'' means in an RNN}
+
+One step corresponds to one word passing through the entire network --- input layer
+$\rightarrow$ hidden layer 1 $\rightarrow$ hidden layer 2 $\rightarrow$ output layer.
+
+The key difference from a standard neural network is that the hidden layers take
+\textbf{two inputs} at each step:
+\begin{itemize}
+    \item The current word (from the input layer).
+    \item The hidden state (memory) carried forward from the previous step.
+\end{itemize}
+
+\subsubsection{Output layer behavior at intermediate steps}
+
+In a many-to-one RNN (e.g., sentiment analysis), the output layer only activates at the
+\textbf{final time step}:
+
+\begin{itemize}
+    \item \textbf{Steps 1--4:} The output layer is not activated. Hidden layers process
+          words and update memory.
+    \item \textbf{Step 5:} The output layer activates and produces the final prediction
+          (e.g., positive or negative sentiment).
+\end{itemize}
+
+Other RNN output configurations include:
+\begin{itemize}
+    \item \textbf{Many-to-many:} Output produced at every step (e.g., machine
+          translation, part-of-speech tagging).
+    \item \textbf{One-to-many:} One input, many outputs (e.g., image captioning).
+\end{itemize}
+
+\subsubsection{Training on sequential data}
+
+For sentiment analysis on 10 sentences, each with 5 words, training proceeds as follows
+for each sentence:
+
+\begin{enumerate}
+    \item \textbf{Step 1:} Feed word 1 $\to$ hidden layers update memory. No output yet.
+    \item \textbf{Step 2:} Feed word 2 $\to$ hidden layers combine current word with
+          memory from step 1. No output yet.
+    \item \textbf{Steps 3--4:} Same process continues.
+    \item \textbf{Step 5:} Feed word 5 $\to$ output produced $\to$ loss calculated $\to$
+          backpropagation (BPTT) $\to$ gradient descent.
+\end{enumerate}
+
+Then move to sentence 2 and repeat. Processing all 10 sentences constitutes one epoch.
+
+% -----------------------------------------------------------
+\subsection{End-to-End Trace: Inputs, Mechanism, Outputs}
+% -----------------------------------------------------------
+
+We trace the complete forward pass of a simple RNN on the sentence ``the red dog,''
+where the task is to predict the part of speech (DET, ADJ, or NOUN) for each word.
+
+\medskip
+\noindent\textbf{Step 1: Represent the input.}
+Each word is converted into a numerical vector $\mathbf{x}^{(t)}$. For example, a
+one-hot vector of size $|V|$ (the vocabulary size) where the entry for that word is 1
+and all others are 0. Modern systems use learned word embeddings --- dense
+lower-dimensional vectors.
+
+\medskip
+\noindent\textbf{Step 2: Initialize the hidden state.}
+Before the first word, the hidden state $\mathbf{h}^{(0)}$ is set to the zero vector.
+This represents empty memory at the start of the sequence.
+
+\medskip
+\noindent\textbf{Step 3: Process each word one at a time.}
+At each time step $t$, the hidden state is updated using:
+
+\[
+\mathbf{h}^{(t)} = \tanh\!\left(\mathbf{U}\mathbf{h}^{(t-1)} + \mathbf{W}\mathbf{x}^{(t)}\right)
+\]
+
+\begin{itemize}
+  \item $\mathbf{h}^{(t)}$ --- the new hidden state (updated memory) after seeing the
+        $t$-th input.
+  \item $\mathbf{h}^{(t-1)}$ --- the previous hidden state (accumulated memory from all
+        prior steps).
+  \item $\mathbf{x}^{(t)}$ --- the current input vector (the encoding of the current
+        word).
+  \item $\mathbf{U}$ --- the recurrent weight matrix. It determines how the previous
+        memory is carried forward and blended into the new state. This is the
+        ``memory of the past'' connection.
+  \item $\mathbf{W}$ --- the input weight matrix. It determines how the new input is
+        incorporated into the hidden state. This is the ``perception of the present''
+        connection.
+  \item $\tanh$ --- the hyperbolic tangent activation function. It squashes all values
+        into the range $[-1, 1]$, keeping the hidden state bounded and introducing
+        non-linearity so the network can learn complex patterns.
+\end{itemize}
+
+This equation says: multiply the previous memory by $\mathbf{U}$, multiply the new input
+by $\mathbf{W}$, add the two results together, and squeeze them through $\tanh$ to
+produce new memory. The same $\mathbf{U}$ and $\mathbf{W}$ are reused at every single
+time step.
+
+\medskip
+\noindent\textbf{Step 4: Compute the output at each step.}
+After computing the hidden state, an output prediction is produced:
+
+\[
+\mathbf{o}^{(t)} = \text{softmax}\!\left(\mathbf{V}\mathbf{h}^{(t)}\right)
+\]
+
+\begin{itemize}
+  \item $\mathbf{o}^{(t)}$ --- the output at step $t$: a probability distribution over
+        all possible labels (here: DET, ADJ, NOUN).
+  \item $\mathbf{V}$ --- the output weight matrix. It maps from the hidden state space
+        to the label space.
+  \item $\text{softmax}$ --- converts raw scores into probabilities that sum to 1.
+        The label with the highest probability is the predicted class.
+\end{itemize}
+
+This equation says: take the current memory $\mathbf{h}^{(t)}$, multiply by $\mathbf{V}$
+to get a score for each label, then pass through softmax to get a proper probability
+distribution. The predicted label is $\arg\max \mathbf{o}^{(t)}$.
+
+\medskip
+\noindent\textbf{Step 5: Compute the loss.}
+The cross-entropy loss at each step compares the predicted distribution to the true label:
+
+\[
+L_{CE}\!\left(\hat{\mathbf{y}}_t, \mathbf{y}_t\right) = -\log \hat{\mathbf{y}}_t[w_{t+1}]
+\]
+
+\begin{itemize}
+  \item $L_{CE}$ --- the cross-entropy loss for one time step. It measures how wrong the
+        prediction is.
+  \item $\hat{\mathbf{y}}_t$ --- the predicted probability distribution over labels at
+        step $t$.
+  \item $\mathbf{y}_t$ --- the true label (as a one-hot vector; 1 at the correct class,
+        0 everywhere else).
+  \item $w_{t+1}$ --- the index of the correct next label.
+  \item $-\log(\cdot)$ --- the negative logarithm. It equals 0 when the probability
+        assigned to the correct label is 1 (perfect prediction) and grows toward infinity
+        as the assigned probability approaches 0.
+\end{itemize}
+
+The loss is small when the model correctly assigns high probability to the right label
+and large when it does not. The total training loss is the average across all steps:
+$L = \frac{1}{T}\sum_{t=1}^{T} L_{CE}^{(t)}$.
+
+\medskip
+\noindent\textbf{Step 6: Backpropagation Through Time (BPTT).}
+To adjust the weights, we compute how much each weight --- $\mathbf{U}$, $\mathbf{W}$,
+$\mathbf{V}$ --- contributed to the total loss. Because the same weights appear at every
+time step, their gradient is the sum of contributions from all steps. The error signal
+flows backward through the unrolled computation graph from step $T$ back to step 1.
+This is BPTT: standard backpropagation applied to the unrolled RNN.
+
+\medskip
+\noindent\textbf{Step 7: Weight update.}
+The weights $\mathbf{U}$, $\mathbf{W}$, $\mathbf{V}$ are nudged in the direction that
+reduces the loss (gradient descent). Because these weights are shared across all time
+steps, one update to $\mathbf{U}$ affects the computation at every step simultaneously.
+
+``Same across all time steps'' describes what happens during one pass through a single
+sequence. When the RNN reads the words ``the red dog,'' it uses the exact same
+$\mathbf{U}$, $\mathbf{W}$, and $\mathbf{V}$ at step 1, step 2, and step 3. The weights
+do not change while it is reading that sentence. Think of it like a recipe: the same
+recipe is followed for every word in the sequence.
+
+``Nudged'' describes what happens after the full sequence has been processed and the
+network checks how wrong its predictions were. At that point --- not during the reading,
+but after --- it adjusts $\mathbf{U}$, $\mathbf{W}$, and $\mathbf{V}$ slightly to do
+better next time. The next time the network reads a sentence, it again uses those updated
+weights at every step. The recipe gets tweaked between sequences, not mid-sequence.
+
+\medskip
+\noindent\textbf{Concrete trace through ``the red dog'':}
+
+\begin{enumerate}
+  \item $t = 1$, input = ``the.''
+        $\mathbf{h}^{(1)} = \tanh(\mathbf{U}\mathbf{h}^{(0)} + \mathbf{W}\mathbf{x}_{\text{the}})$.
+        Since $\mathbf{h}^{(0)} = \mathbf{0}$, this is just
+        $\tanh(\mathbf{W}\mathbf{x}_{\text{the}})$.
+        Output $\mathbf{o}^{(1)}$ gives probabilities over \{DET, ADJ, NOUN\}.
+        Predicted label: DET.
+
+  \item $t = 2$, input = ``red.''
+        $\mathbf{h}^{(2)} = \tanh(\mathbf{U}\mathbf{h}^{(1)} + \mathbf{W}\mathbf{x}_{\text{red}})$.
+        The hidden state $\mathbf{h}^{(1)}$ already encodes information about ``the.''
+        The network knows a determiner came before this word.
+        Predicted label: ADJ.
+
+  \item $t = 3$, input = ``dog.''
+        $\mathbf{h}^{(3)} = \tanh(\mathbf{U}\mathbf{h}^{(2)} + \mathbf{W}\mathbf{x}_{\text{dog}})$.
+        The hidden state $\mathbf{h}^{(2)}$ encodes information about both ``the'' and
+        ``red.'' The network knows a DET and an ADJ have appeared, so a NOUN is expected.
+        Predicted label: NOUN.
+\end{enumerate}
+
+At every step, the prediction is informed by the entire prior history of the sequence,
+not just the current word. This is the core power of the recurrence.
+
+% -----------------------------------------------------------
+\subsection{Backpropagation Through Time (BPTT) in Detail}
+% -----------------------------------------------------------
+
+After the loss is computed at the final step, backpropagation traces blame backwards
+through all time steps. Since the \textbf{same weights are shared across all time steps},
+gradient descent collects gradients from all steps, sums them, and updates the shared
+weights once:
+
+\[
+\Delta W = G_1 + G_2 + G_3 + G_4 + G_5
+\]
+
+The blame propagates as follows (using a 5-step sequence as an example):
+\begin{itemize}
+    \item Step 5: output layer weights + hidden state at step 5 receive blame directly
+          from the loss.
+    \item Step 4: hidden state at step 4 influenced step 5's memory, so it receives blame
+          too.
+    \item Step 3: blame traces back further.
+    \item Steps 2--1: blame continues propagating back through the full sequence.
+\end{itemize}
+
+\subsubsection{Gradients multiply during backpropagation; sum during weight update}
+
+There is an important distinction between what happens during backpropagation versus
+gradient descent:
+
+\begin{itemize}
+    \item \textbf{During BPTT (chain rule):} Gradients are \textit{multiplied} as blame
+          propagates backwards through time steps.
+    \item \textbf{During gradient descent:} The gradients from all steps are
+          \textit{summed} to update the shared weights.
+\end{itemize}
+
+The cumulative gradient reaching each time step is:
+
+\begin{align}
+\text{Step 5:} & \quad G_5 \\
+\text{Step 4:} & \quad G_5 \times G_4 \\
+\text{Step 3:} & \quad G_5 \times G_4 \times G_3 \\
+\text{Step 2:} & \quad G_5 \times G_4 \times G_3 \times G_2 \\
+\text{Step 1:} & \quad G_5 \times G_4 \times G_3 \times G_2 \times G_1
+\end{align}
+
+This is exactly why the \textbf{vanishing gradient problem} occurs. If each local
+gradient $G_i < 1$, multiplying many of them together makes the gradient at step 1
+nearly zero --- the network effectively forgets information from early steps. This
+limitation motivated the development of \textbf{Long Short-Term Memory (LSTM)} networks.
+
+% -----------------------------------------------------------
+\subsection{Cost and Tradeoffs}
+% -----------------------------------------------------------
+
+\textbf{What you give up:}
+
+\medskip
+\noindent\textit{Speed and parallelism.}
+Each step depends on the previous one, so the computation cannot be parallelized across
+the time dimension. Transformer models process entire sequences in parallel, making them
+orders of magnitude faster to train on modern GPU hardware. This is the most significant
+practical cost of RNNs.
+
+\medskip
+\noindent\textit{Long-term memory.}
+Vanilla RNNs are fundamentally limited in how far back they can effectively remember,
+due to vanishing gradients. Even LSTMs --- designed to address this --- degrade on
+sequences of thousands of steps. Transformers handle arbitrary-range dependencies with
+no structural limit.
+
+\medskip
+\noindent\textit{Training stability.}
+Exploding gradients require gradient clipping. Vanishing gradients require careful
+initialization and sometimes truncated BPTT. Training is more finicky than training
+feedforward networks.
+
+\medskip
+\noindent\textit{Interpretability.}
+The hidden state is a dense, opaque vector. There is no easy way to inspect what the
+network is remembering at any given step or why it made a particular prediction.
+
+\bigskip
+\noindent\textbf{What you gain:}
+
+\medskip
+\noindent\textit{Variable-length sequences.}
+The same three weight matrices ($\mathbf{W}$, $\mathbf{U}$, $\mathbf{V}$) handle
+sequences of any length. No truncation, no fixed window. This is the core practical
+advantage.
+
+\medskip
+\noindent\textit{Sequential memory.}
+Each prediction is conditioned on the entire prior history in a continuous and learned
+way --- not a hard-coded window. The network learns what to remember and how to compress
+it, entirely from data.
+
+\medskip
+\noindent\textit{Parameter efficiency.}
+The same weight matrices are reused at every step. Compared to an unrolled feedforward
+network of equivalent depth and sequence length, the RNN uses far fewer parameters.
+
+\medskip
+\noindent\textit{Natural fit for sequential data.}
+The architecture is structurally aligned with the problem. As the Jurafsky \& Martin
+textbook notes, language is inherently temporal --- a sequence that unfolds in time.
+RNNs model this directly rather than forcing sequential data into a fixed-size input.
+
+\medskip
+\noindent\textit{Remarkable practical results.}
+Karpathy demonstrated that a character-level LSTM trained on raw text can produce
+plausible Shakespeare, syntactically valid \LaTeX, and structurally reasonable C code
+--- all by predicting the next character. The hidden state implicitly learns complex
+syntactic and stylistic structure without any explicit supervision.
+
+\subsection{The Role of Matrices U, W, and V in an RNN}
+
+Think of an RNN as a student reading a story one word at a time, keeping a notepad.
+
+At every step, two things arrive:
+\begin{itemize}
+    \item A \textbf{new word} (the current input, $x$)
+    \item The \textbf{notepad} from the last step (the previous hidden state, $h$)
+\end{itemize}
+
+The student must combine them into a \textbf{new, updated notepad} (the new hidden state). Then look at the notepad and \textbf{guess the label}. The three matrices are the student's three abilities.
+
+\subsubsection{W — ``How do I read new words?''}
+
+When a new word arrives, \textbf{W decides how much that word contributes to the notepad.}
+
+Every word is represented as a vector of numbers (e.g., a one-hot or embedding vector). $W$ multiplies that vector to transform it into a format the hidden state can absorb.
+
+Think of $W$ as the student's \textit{reading ability} --- the skill of looking at a new word and figuring out what is important about it for memory.
+
+\textbf{W is the connection between: input $\rightarrow$ hidden state.}
+
+\subsubsection{U — ``How much do I trust my old notes?''}
+
+When the old notepad arrives, \textbf{U decides how much of the previous memory survives and gets mixed in.}
+
+$U$ multiplies the old hidden state to transform it into a contribution for the new hidden state.
+
+Think of $U$ as the student's \textit{memory-integration skill} --- the ability to look at yesterday's notes and decide what is still relevant today.
+
+\textbf{U is the connection between: old hidden state $\rightarrow$ new hidden state.}
+
+\subsubsection{Putting W and U Together: The Core Formula}
+
+\[
+h^{(t)} = \tanh\!\left(U h^{(t-1)} + W x^{(t)}\right)
+\]
+
+In plain English:
+\begin{itemize}
+    \item $W x^{(t)}$ = ``Here is what the new word tells me''
+    \item $U h^{(t-1)}$ = ``Here is what I already remembered''
+    \item Add them $\rightarrow$ ``My combined understanding right now''
+    \item Pass through $\tanh$ $\rightarrow$ ``Compress it so numbers don't explode''
+    \item Result = \textbf{new notepad} $h^{(t)}$
+\end{itemize}
+
+Both $W$ and $U$ are learned during training. The network learns: \textit{how much should I trust old memory vs.\ new input?} That balance is baked into $U$ and $W$.
+
+\subsubsection{V — ``How do I make a prediction from my notes?''}
+
+After the notepad (hidden state) is updated, \textbf{V translates the notepad into a prediction.}
+
+The notepad is a dense vector of numbers --- not human-readable. $V$ maps that memory space into the label space (DET, ADJ, NOUN).
+
+Think of $V$ as the student's \textit{answering skill} --- the ability to look at the notepad and say ``given everything I know, my best guess for this word's tag is NOUN.''
+
+\[
+o^{(t)} = \text{softmax}\!\left(V h^{(t)}\right)
+\]
+
+\textbf{V is the connection between: hidden state $\rightarrow$ output.}
+
+\subsubsection{Why Three Separate Matrices?}
+
+Because they do three fundamentally different jobs:
+
+\begin{center}
+\begin{tabular}{|c|l|l|}
+\hline
+\textbf{Matrix} & \textbf{Job} & \textbf{Connects} \\
+\hline
+$W$ & Process new input & input $\rightarrow$ hidden \\
+$U$ & Carry old memory forward & hidden $\rightarrow$ hidden \\
+$V$ & Make predictions & hidden $\rightarrow$ output \\
+\hline
+\end{tabular}
+\end{center}
+
+All three matrices are \textbf{shared across every time step}. They do not change while reading a sentence --- only after the loss is computed via BPTT. During a single forward pass, they are fixed, like a fixed habit applied to every word.
+
+
+\subsection{Shape Compatibility in Matrix Multiplication and How W's Values Are Determined}
+
+\subsubsection{How W's Values Are Determined}
+
+$W$ starts random. Before training begins, every element of $W$ is initialized to a small random number (drawn from a Gaussian or uniform distribution). The network knows nothing yet.
+
+Then, after each forward pass and loss calculation, backpropagation computes $\partial L / \partial W$ --- how much each element of $W$ contributed to the error. Gradient descent then nudges every element slightly:
+
+\[
+W_{\text{new}} = W_{\text{old}} - \eta \cdot \frac{\partial L}{\partial W}
+\]
+
+This repeats thousands of times. Over training, $W$'s values settle into numbers that make $W x^{(t)}$ produce useful contributions to the hidden state. The network learns $W$ --- you do not set it by hand.
+
+\subsubsection{Matrix Multiplication Shape Rules}
+
+For two matrices $A$ and $B$, the product $AB$ is only legal if:
+
+\begin{center}
+\textit{The number of columns in $A$ equals the number of rows in $B$.}
+\end{center}
+
+If $A$ is shape $[m \times n]$ and $B$ is shape $[n \times p]$, then $AB$ gives shape $[m \times p]$. The inner dimensions must match. The outer dimensions become the result shape.
+
+\subsubsection{Applying This to W, U, and V}
+
+Fix concrete numbers:
+\begin{itemize}
+    \item Vocabulary size = 30 $\Rightarrow$ input vector $x$ has shape $[30 \times 1]$
+    \item Hidden state size = 5 $\Rightarrow$ $h$ has shape $[5 \times 1]$
+    \item Output classes = 3 (DET, ADJ, NOUN) $\Rightarrow$ output $o$ has shape $[3 \times 1]$
+\end{itemize}
+
+\textbf{$W x^{(t)}$ must produce $[5 \times 1]$:}
+$x$ is $[30 \times 1]$, so $W$ needs 30 columns and 5 rows. $W$ is $[5 \times 30]$.
+\[
+[5 \times 30] \cdot [30 \times 1] = [5 \times 1] \checkmark
+\]
+
+\textbf{$U h^{(t-1)}$ must also produce $[5 \times 1]$:}
+$h^{(t-1)}$ is $[5 \times 1]$, so $U$ needs 5 columns and 5 rows. $U$ is $[5 \times 5]$.
+\[
+[5 \times 5] \cdot [5 \times 1] = [5 \times 1] \checkmark
+\]
+
+The addition $U h^{(t-1)} + W x^{(t)}$ is $[5 \times 1] + [5 \times 1] = [5 \times 1]$ (shapes must be identical for element-wise addition). $\checkmark$
+
+\textbf{$V h^{(t)}$ must produce $[3 \times 1]$:}
+$h^{(t)}$ is $[5 \times 1]$, so $V$ needs 5 columns and 3 rows. $V$ is $[3 \times 5]$.
+\[
+[3 \times 5] \cdot [5 \times 1] = [3 \times 1] \checkmark
+\]
+
+\subsubsection{Summary of Matrix Shapes}
+
+\begin{center}
+\begin{tabular}{|c|c|>{\raggedright\arraybackslash}p{5.2cm}|}
+\hline
+\textbf{Matrix} & \textbf{Shape} & \textbf{Values Determined By} \\
+\hline
+$W$ & $[\text{hidden\_size} \times \text{input\_size}]$ & You set the sizes; values learned via backprop \\
+$U$ & $[\text{hidden\_size} \times \text{hidden\_size}]$ & You set hidden\_size; values learned via backprop \\
+$V$ & $[\text{output\_size} \times \text{hidden\_size}]$ & You set the sizes; values learned via backprop \\
+\hline
+\end{tabular}
+\end{center}
+
+The \textbf{sizes} are fixed by your architecture choices. The \textbf{values inside} those matrices are what training learns.
+
+
+\subsection{Why U Must Always Be a Square Matrix}
+
+Yes, $U$ must always be square --- and this is not a convention but a shape requirement forced by the recurrence itself.
+
+$U$ multiplies $h^{(t-1)}$, which has shape $[\text{hidden\_size} \times 1]$, and must produce something of shape $[\text{hidden\_size} \times 1]$ so it can be added with $W x^{(t)}$. The input and output of $U$ must be the same size --- hidden\_size --- so $U$ is always $[\text{hidden\_size} \times \text{hidden\_size}]$.
+
+
+\subsection{Initialization of U}
+
+Yes. $U$ is initialized randomly, just like $W$ and $V$, then learned through backpropagation the same way.
+
+
+\subsection{How the Hidden State h Is Shaped and Valued}
+
+\subsubsection{Shape}
+
+You decide it. The hidden size is a hyperparameter you pick before training (e.g., 5, 128, 512). This fixes $h$ as $[\text{hidden\_size} \times 1]$ for the entire model. Larger hidden size = more memory capacity, but more parameters and more computation.
+
+\subsubsection{Values}
+
+$h$ is never learned directly. It is always \textit{computed} at each step:
+
+\[
+h^{(t)} = \tanh\!\left(U h^{(t-1)} + W x^{(t)}\right)
+\]
+
+\begin{itemize}
+    \item $h^{(0)}$ is set to the zero vector --- no memory before the sequence starts.
+    \item $h^{(1)}$ is computed from $h^{(0)}$ and the first input.
+    \item $h^{(2)}$ is computed from $h^{(1)}$ and the second input.
+    \item And so on.
+\end{itemize}
+
+$h$ is not a parameter of the model. It is a result --- freshly recomputed at every time step during the forward pass, thrown away after the sequence is done, and rebuilt from scratch for the next sequence. What gets learned are $U$ and $W$, whose values shape what $h$ becomes.
+
+
+\section{Bidirectional RNN}
+
+\subsection{Motivation and Core Idea}
+
+A regular RNN reads a sentence from left to right, one word at a time, keeping a running notepad (the hidden state) as it goes. But it can only see what came before. When it is processing word \#3, it has no idea what words \#4, \#5, \#6 are going to say.
+
+That causes real problems. Take this sentence:
+
+\begin{quote}
+\textit{``I went to the \textbf{bank} to fish.''}
+\end{quote}
+
+versus
+
+\begin{quote}
+\textit{``I went to the \textbf{bank} to deposit money.''}
+\end{quote}
+
+The word ``bank'' appears in the same position in both sentences. When a regular RNN gets to ``bank,'' it has only seen \textit{``I went to the''} --- which tells it nothing. The clue that separates the two meanings comes \textbf{after} the word ``bank.'' A regular RNN is blind to that.
+
+A \textbf{Bidirectional RNN} fixes this by running two regular RNNs at the same time on the same sentence:
+
+\begin{itemize}
+    \item \textbf{RNN \#1} reads left $\rightarrow$ right (past to future).
+    \item \textbf{RNN \#2} reads right $\leftarrow$ left (future to past), starting from the last word and working backward.
+\end{itemize}
+
+At every word position, you have two hidden states --- one carrying memory of everything \textit{before} this word, and one carrying memory of everything \textit{after} this word. These are concatenated into one combined vector, which is used to make the prediction for that position.
+
+Think of it like two detectives investigating the same crime --- one starts from the beginning, one starts from the end. Neither one announces a verdict on their own. They meet in the middle, share their notes, and then together decide: guilty or not guilty.
+
+One important limitation: bidirectional RNNs need the \textbf{whole sequence available upfront}. The backward RNN has to start from the end, so it cannot be used when input arrives word by word in real time. It is only practical when the full input is available ahead of time --- like reading a sentence for translation or POS tagging.
+
+
+\subsection{Training on a Fixed-Length Dataset}
+
+Consider 10 sentences, each with 5 words. Each sentence is one training example processed one at a time. Here is what happens for one sentence, say \textit{``The cat sat on mat''}:
+
+\textbf{Step 1 --- Forward RNN runs left to right.}
+It reads: The $\rightarrow$ cat $\rightarrow$ sat $\rightarrow$ on $\rightarrow$ mat, updating its hidden state at each step:
+\[
+h_f^1 \rightarrow h_f^2 \rightarrow h_f^3 \rightarrow h_f^4 \rightarrow h_f^5
+\]
+By $h_f^5$, this RNN has seen the whole sentence from the left.
+
+\textbf{Step 2 --- Backward RNN runs right to left.}
+It reads: mat $\rightarrow$ on $\rightarrow$ sat $\rightarrow$ cat $\rightarrow$ The, updating its own hidden state:
+\[
+h_b^5 \rightarrow h_b^4 \rightarrow h_b^3 \rightarrow h_b^2 \rightarrow h_b^1
+\]
+Note: $h_b^5$ is the backward RNN's \textit{first} computation (starts at ``mat''). $h_b^1$ is its \textit{last}.
+
+\textbf{Step 3 --- Combine at each position.}
+At every word position $t$, concatenate the two hidden states:
+\[
+\text{position } t: \quad [h_f^t \; ; \; h_b^t]
+\]
+
+\textbf{Step 4 --- Compute output and loss.}
+This depends on the task. For word-level labeling (e.g., POS tagging), compute an output at all 5 positions and average the losses. For sentence-level classification (e.g., sentiment), use only $h_f^5$ and $h_b^1$ --- the final states of each RNN --- concatenate them, and compute one loss.
+
+\textbf{Step 5 --- Backpropagation through both RNNs.}
+Gradients flow backward through time in each RNN separately:
+\begin{itemize}
+    \item Through the \textbf{forward RNN}: from position 5 back to position 1 (standard BPTT).
+    \item Through the \textbf{backward RNN}: from position 1 back to position 5 (same BPTT logic, reversed direction).
+\end{itemize}
+
+Each RNN updates its own separate weights: $W_f, U_f$ for the forward one, $W_b, U_b$ for the backward one, plus the shared output weight $V$.
+
+The same process repeats for all 10 sentences --- that is one epoch. This repeats for many epochs until the loss converges.
+
+\textbf{Key point:} Both RNNs never talk to each other during the forward pass. They run independently and only meet at the concatenation step. Backpropagation also treats them independently --- gradients for the forward RNN never flow into the backward RNN's weights, and vice versa.
+
+
+\subsection{Output Responsibility of Each RNN in a Bidirectional Architecture}
+
+Neither RNN produces ``positive or negative'' on its own. That is not how it works.
+
+Both RNNs only produce \textbf{hidden states}. That is their only job.
+
+\begin{itemize}
+    \item Forward RNN finishes $\rightarrow$ produces $h_f^5$ (summarizes the sentence left-to-right).
+    \item Backward RNN finishes $\rightarrow$ produces $h_b^1$ (summarizes the sentence right-to-left).
+\end{itemize}
+
+These two are concatenated: $[h_f^5 \; ; \; h_b^1]$
+
+Then this combined vector is fed into one single output layer, which produces one prediction --- positive or negative.
+
+There is only \textbf{one output}, not two. The backward RNN is not a classifier. It is a context builder. Its hidden state carries right-to-left information, hands it to the output layer, and the output layer makes the final call using both directions together.
+
+
+\subsection{Concatenation as a Column Vector, Not a Matrix}
+
+The hidden states $h_f^5$ and $h_b^1$ are each a single column vector --- the hidden state at one specific time step. Concatenation means stacking them vertically:
+\[
+\begin{bmatrix} h_f^5 \\ h_b^1 \end{bmatrix}
+\]
+
+So if both have shape $[2 \times 1]$, the result is $[4 \times 1]$ --- not $[2 \times 2]$.
+
+Making it $2 \times 2$ would turn it into a matrix, which would break the output layer's matrix multiplication that comes after. The result must stay a single column vector, just longer.
+
+
+\subsection{Hidden State Dimensionality: Vector vs.\ Matrix}
+
+$h$ is a vector in a vanilla RNN as well. That is the standard case for a single sequence.
+
+$h$ can technically become a matrix in one situation: \textbf{batch processing}. If you feed multiple sentences through the RNN at the same time (say a batch of 8 sentences), you stack their individual $h$ vectors side by side and get a matrix of shape $[\text{hidden\_size} \times 8]$. But that is just an implementation convenience --- conceptually, each sentence still has its own $h$ vector. You are simply processing several of them in parallel.
+
+\begin{itemize}
+    \item Single sequence: $h$ is always a vector.
+    \item Batched sequences: $h$ becomes a matrix, but only as a computational shortcut.
+\end{itemize}
+
+%===================================================================
+
+\subsection{Hidden State Notation in RNNs: $h_t$ vs $h_1, h_2, \ldots$}
+$h_t$ is the general symbolic notation for the hidden state at time step $t$. When referring to specific steps, the subscript becomes concrete:
+\begin{itemize}
+    \item After processing word 1 $\rightarrow$ $h_1$ \quad ($t = 1$)
+    \item After processing word 2 $\rightarrow$ $h_2$ \quad ($t = 2$)
+    \item After processing word 5 $\rightarrow$ $h_5$ \quad ($t = 5$)
+\end{itemize}
+
+In a stacked RNN with multiple hidden layers, each layer maintains its own hidden state at every time step. For two hidden layers:
+\begin{itemize}
+    \item $h^1_t$ = hidden state of layer 1 at time step $t$
+    \item $h^2_t$ = hidden state of layer 2 at time step $t$
+\end{itemize}
+
+When people write $h_t$ without a layer superscript, they typically refer to the \textit{top} hidden layer's output, since that is what feeds into the output layer.
+
+\subsection{Why the Top Hidden Layer --- Not the Output Layer --- Is Called $h_t$}
+$h_t$ is specifically the recurrent memory: the vector carried forward to the next time step. That is its defining role.
+
+The output layer's vector (commonly written $o_t$ or $\hat{y}_t$) is a prediction. It is produced, used to compute loss, and discarded. It does \textbf{not} feed back into the next time step and plays no role in the recurrence.
+
+The hidden layers are the ones performing the recurrence:
+\begin{align*}
+    h^1_t &= \tanh\!\left(W^1 x_t + U^1 h^1_{t-1}\right) \\
+    h^2_t &= \tanh\!\left(W^2 h^1_t + U^2 h^2_{t-1}\right) \\
+    o_t   &= \text{softmax}\!\left(V h^2_t\right)
+\end{align*}
+
+The top hidden layer is referred to as $h_t$ because it is the most summarized representation of everything the network has seen, and it is directly connected to the output. The output vector is a different object with a different role: it is a classification result, not a memory state.
+
+\subsection{Each Hidden Layer Maintains Its Own Recurrent Memory}
+Each hidden layer carries its own previous state forward independently, not just the top layer:
+\begin{itemize}
+    \item Layer 1 carries $h^1_{t-1}$ forward and uses it when processing the current word.
+    \item Layer 2 carries $h^2_{t-1}$ forward and uses it when processing the current word.
+\end{itemize}
+
+The top hidden layer's state is colloquially called $h_t$ because it is the final summarized memory before the output, but both layers have their own independent recurrence running in parallel.
+
+\subsection{How Deeper Hidden Layers Receive Current Word Information}
+In a stacked RNN, only the first hidden layer is directly connected to the input $x_t$. Deeper layers do not receive $x_t$ directly --- they do not need to.
+
+Layer 1 processes $x_t$ and produces $h^1_t$, which already encodes information about the current word. Layer 2 takes $h^1_t$ as its input, so $x_t$'s information reaches it indirectly through layer 1's output.
+
+\begin{align*}
+    h^1_t &= \tanh\!\left(W^1 x_t   + U^1 h^1_{t-1}\right) \quad \text{(receives actual word vector)} \\
+    h^2_t &= \tanh\!\left(W^2 h^1_t + U^2 h^2_{t-1}\right) \quad \text{(receives layer 1's output, not } x_t\text{)}
+\end{align*}
+
+For layer 2, $h^1_t$ plays the same role that $x_t$ played for layer 1 --- it is the current input. The current word's information is already encoded within it. $x_t$ does not skip layers; it flows upward through the network the same way it does in a standard feedforward network.
+
+%====================================================================
