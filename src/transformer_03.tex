@@ -1,0 +1,552 @@
+\textbf{Explain attention in transformers in plain english, assume you are explaining to an 8th grade student.}
+
+\medskip
+
+\textbf{Attention in Transformers --- Plain English}
+
+Imagine you're reading this sentence:
+
+\begin{quote}
+\textit{``The trophy didn't fit in the suitcase because \textbf{it} was too big.''}
+\end{quote}
+
+What does \textbf{``it''} refer to --- the trophy or the suitcase? You figured it out instantly because your brain paid more \textit{attention} to ``trophy'' than to ``suitcase'' when reading the word ``it.''
+
+That's exactly what attention does in a Transformer --- it lets every word look at every other word in a sentence and ask: \textbf{``Who here is most relevant to me?''}
+
+\medskip
+\textbf{The Library Analogy}
+
+Think of it like searching in a library:
+
+\begin{itemize}
+\item You walk in with a \textbf{question} (this is called the \textbf{Query}) --- \textit{``I'm looking for books about space.''}
+\item Every book has a \textbf{label on its spine} (this is the \textbf{Key}) --- \textit{``Physics,'' ``Cooking,'' ``Astronomy''...}
+\item Inside each book is the actual \textbf{content} (this is the \textbf{Value}).
+\end{itemize}
+
+You compare your question against every book's label. The more a label matches your question, the more you read from that book's content. That weighted mix of content is what you walk out with.
+
+\textbf{Every word in a sentence does this same process --- simultaneously, for every other word.}
+
+\medskip
+\textbf{What Actually Happens, Step by Step}
+
+\begin{enumerate}
+\item Each word gets turned into three things: a \textbf{Query}, a \textbf{Key}, and a \textbf{Value} --- just lists of numbers.
+\item The word compares its Query against every other word's Key (using a dot product --- basically a similarity score).
+\item Those scores get converted into percentages that add up to 100\% (this is called \textbf{softmax}). High percentage = pay a lot of attention. Low percentage = mostly ignore.
+\item Finally, the word collects a \textbf{weighted mix} of everyone's Values, based on those percentages.
+\end{enumerate}
+
+The result? Every word now carries information not just about itself, but about the whole sentence --- specifically the parts most relevant to it.
+
+\medskip
+\textbf{Why It's Powerful}
+
+Before Transformers, models read sentences word-by-word, left to right, like reading with one eye closed. Attention lets every word look at the entire sentence at once, so the model can understand context much better --- no matter how far apart the related words are.
+
+\medskip
+\textbf{Multi-Head Attention (Bonus)}
+
+The Transformer actually runs this attention process \textbf{8 times in parallel}, each looking for \textit{different kinds of relationships} --- one head might track grammar, another tracks meaning, another tracks references like ``it $\to$ trophy.'' Then all 8 results get combined into one final answer. Think of it as 8 people reading the same sentence, each underlining different things, then sharing notes.
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{Give me a concrete math walkthrough of attention calculations. For a single word.}
+
+\medskip
+
+\textbf{Concrete Math Walkthrough: Attention for Word ``cat''}
+
+\textbf{Sentence:} ``The cat sat'' --- we'll compute attention for \textbf{``cat''} (word 2).
+
+We use tiny 2D vectors so the arithmetic is followable by hand. In real transformers these are 64D, but the math is identical.
+
+\medskip
+\textbf{Setup}
+
+\begin{verbatim}
+x1 = [1, 0]   -> "The"
+x2 = [0, 1]   -> "cat"   <- our focus word
+x3 = [1, 1]   -> "sat"
+\end{verbatim}
+
+The model has learned weight matrices $W_Q$, $W_K$, $W_V$. Applying them to every embedding gives us Q, K, V vectors for each word. For this example, assume the results are already computed:
+
+\begin{verbatim}
+q2 = [1, 1]   <- "cat"'s Query
+
+k1 = [1, 0]   <- "The"'s Key
+k2 = [0, 1]   <- "cat"'s Key
+k3 = [1, 1]   <- "sat"'s Key
+
+v1 = [1, 0]   <- "The"'s Value
+v2 = [0, 1]   <- "cat"'s Value
+v3 = [1, 1]   <- "sat"'s Value
+\end{verbatim}
+
+\medskip
+\textbf{Step 1 --- Raw Scores (dot product: $q_2 \cdot$ each key)}
+
+``cat'' asks: \textit{how relevant is each word to me?}
+
+Dot product = multiply element-by-element, then add.
+
+\begin{verbatim}
+score("The") = q2 . k1 = (1x1) + (1x0) = 1
+score("cat") = q2 . k2 = (1x0) + (1x1) = 1
+score("sat") = q2 . k3 = (1x1) + (1x1) = 2
+\end{verbatim}
+
+Raw scores: \textbf{[1, 1, 2]}
+
+``sat'' scored highest --- ``cat'' finds ``sat'' most relevant. Makes sense.
+
+\medskip
+\textbf{Step 2 --- Scale by $\sqrt{d_k}$}
+
+Raw scores tend to get very large in practice (vectors are 64D, not 2D), which breaks softmax. We divide by $\sqrt{d_k} = \sqrt{2} \approx 1.414$ to stabilize them.
+
+\begin{verbatim}
+[1/1.414, 1/1.414, 2/1.414]
+= [0.707, 0.707, 1.414]
+\end{verbatim}
+
+\medskip
+\textbf{Step 3 --- Softmax}
+
+Convert scores into percentages that add up to 1.
+
+Softmax formula: for each score $s_i \to e^{s_i} / \sum(\text{all } e^s)$
+
+\begin{verbatim}
+e^0.707 ~ 2.028
+e^0.707 ~ 2.028
+e^1.414 ~ 4.113
+
+Sum = 8.169
+
+a1 = 2.028 / 8.169 ~ 0.248   -> pay 24.8% attention to "The"
+a2 = 2.028 / 8.169 ~ 0.248   -> pay 24.8% attention to "cat"
+a3 = 4.113 / 8.169 ~ 0.504   -> pay 50.4% attention to "sat"
+\end{verbatim}
+
+Total: $0.248 + 0.248 + 0.504 = 1.0$ \checkmark
+
+\medskip
+\textbf{Step 4 --- Weighted Sum of Values}
+
+\begin{verbatim}
+output = 0.248 x v1  +  0.248 x v2  +  0.504 x v3
+       = 0.248x[1,0] + 0.248x[0,1] + 0.504x[1,1]
+       = [0.248, 0.000]
+       + [0.000, 0.248]
+       + [0.504, 0.504]
+       -----------------
+       = [0.752, 0.752]
+\end{verbatim}
+
+\medskip
+\textbf{Result}
+
+\textbf{``cat'''s new representation = [0.752, 0.752]}
+
+This is no longer just ``cat'' in isolation. It's a blend --- mostly pulled toward ``sat'' (50.4\%), with smaller contributions from itself and ``The''. The word ``cat'' now carries context from the whole sentence, weighted by relevance.
+
+\medskip
+\textbf{The Full Formula}
+
+\[
+\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
+\]
+
+Each step maps directly:
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Formula piece & What we did \\
+\hline
+$QK^\top$ & dot products $\to$ [1, 1, 2] \\
+$\div \sqrt{d_k}$ & divide by 1.414 $\to$ [0.707, 0.707, 1.414] \\
+$\mathrm{softmax}(\cdot)$ & $\to$ [0.248, 0.248, 0.504] \\
+$\times V$ & weighted sum $\to$ [0.752, 0.752] \\
+\hline
+\end{tabular}
+\end{center}
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{The final representation of the word is called \texttt{z} in the lecture slides. Right?}
+
+\medskip
+
+Yes. Both sources use \textbf{Z} for this.
+
+In the lecture notes, the final output of the attention step for a single word is written as lowercase \textbf{z}, as in:
+
+\[
+z = \alpha_1 v_1 + \alpha_2 v_2
+\]
+
+And when written in matrix form (all words at once), it's uppercase \textbf{Z}:
+
+\[
+Z = AV
+\]
+
+So in the walkthrough we did, the [0.752, 0.752] we computed for ``cat'' --- that's $z_2$.
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{In multihead attention, let's say we are using 8 heads. For all 3 words (The, cat, sat) we have calculated `z` once. Before this z values goes into feed forward network, different `z` will be calculated 7 times. Right?}
+
+\medskip
+
+Almost right --- the count is correct, but one nuance: it's not ``calculate z once, then 7 more times.'' All 8 heads run \textbf{in parallel}, each with their own separate $W_Q$, $W_K$, $W_V$ weight matrices. So you get 8 different Z matrices simultaneously --- $Z_1, Z_2, \ldots, Z_8$.
+
+Each head sees the same input words but learns to attend differently, so each Z captures different relationships.
+
+But 8 separate Z matrices can't go into the FFN directly --- the FFN expects a single Z. So before passing forward:
+
+\begin{enumerate}
+\item All 8 Z matrices are \textbf{concatenated} side by side into one big matrix.
+\item That big matrix is multiplied by a learned weight matrix $W_O$ to compress it back to the original size.
+\end{enumerate}
+
+Only then does the single combined Z go into the feed-forward network.
+
+So the flow is:
+
+\begin{verbatim}
+Input -> [Head1, Head2, ..., Head8] -> [Z1, Z2, ..., Z8]
+      -> Concatenate -> x W_O -> single Z -> FFN
+\end{verbatim}
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{Give me a concrete math example to clear the concept of matrix dimensions during z calculations and then passing to feed forward. How the dimensions are handled?}
+
+\medskip
+
+I'll use small numbers to keep the math trackable. The principles are identical to a real transformer.
+
+\medskip
+\textbf{Setup}
+
+\begin{verbatim}
+Sentence:  "The  cat  sat"   -> 3 words
+d_model = 4    (real transformer: 512)
+Heads   = 2    (real transformer: 8)
+d_k     = d_model / heads = 4/2 = 2    (real: 512/8 = 64)
+\end{verbatim}
+
+\textbf{Input Matrix X --- shape $(3 \times 4)$:}
+
+\begin{verbatim}
+X = [1, 0, 1, 0]   <- "The"
+    [0, 1, 0, 1]   <- "cat"
+    [1, 1, 0, 0]   <- "sat"
+\end{verbatim}
+
+\medskip
+\textbf{Step 1 --- Each Head Computes Its Own Q, K, V}
+
+Each head has its own weight matrices: $W_Q$, $W_K$, $W_V$ --- each shaped $(4 \times 2)$.
+
+Multiplying X $(3\times4)$ by $W_Q$ $(4\times2)$ gives Q of shape $(3\times2)$. Same for K and V.
+
+\begin{verbatim}
+Q = X . W_Q  ->  (3x4).(4x2) = (3x2)
+K = X . W_K  ->  (3x4).(4x2) = (3x2)
+V = X . W_V  ->  (3x4).(4x2) = (3x2)
+\end{verbatim}
+
+This happens \textbf{independently for each head}, with different weight matrices.
+
+\medskip
+\textbf{Step 2 --- Compute Z for Each Head}
+
+\begin{verbatim}
+Scores = Q . K^T  ->  (3x2).(2x3) = (3x3)   <- one score per word-pair
+Scores / sqrt(d_k)  ->  (3x3)                <- scale
+Softmax             ->  (3x3)                <- attention weights A
+Z = A . V          ->  (3x3).(3x2) = (3x2)  <- output
+\end{verbatim}
+
+Each head produces a Z of shape $(3 \times 2)$.
+
+\begin{verbatim}
+Z1 = (3x2)   <- from head 1
+Z2 = (3x2)   <- from head 2
+\end{verbatim}
+
+\medskip
+\textbf{Step 3 --- Concatenate All Z's}
+
+Stack $Z_1$ and $Z_2$ side by side along the column axis:
+
+\begin{verbatim}
+Z1           Z2           Concatenated
+[a, b]       [e, f]   ->  [a, b, e, f]
+[c, d]  +    [g, h]   ->  [c, d, g, h]
+[i, j]       [k, l]   ->  [i, j, k, l]
+\end{verbatim}
+
+Shape: $(3 \times 4)$ --- back to original width.
+
+With 8 heads in a real transformer: $8 \times 64 = 512$ columns $\to$ $(n \times 512)$ \checkmark
+
+\medskip
+\textbf{Step 4 --- Multiply by $W_O$}
+
+$W_O$ has shape $(4 \times 4)$ --- it mixes and compresses the concatenated output.
+
+\begin{verbatim}
+Z_final = Concat . W_O  ->  (3x4).(4x4) = (3x4)
+\end{verbatim}
+
+\medskip
+\textbf{Final Dimension Flow}
+
+\begin{verbatim}
+X         W per head    Q/K/V      Scores    Z per head  Concat   W_O     Z_final
+(3x4)  .  (4x2)     =  (3x2)  ->  (3x3)  -> (3x2)   -> (3x4) . (4x4) = (3x4)
+\end{verbatim}
+
+$Z_{\mathrm{final}}$ is $(3 \times 4)$ --- exactly the same shape as the original input X.
+
+\medskip
+\textbf{Key Insight on Why Dimensions Work Out}
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+Thing & Shape & Why \\
+\hline
+X & $3 \times d_{\mathrm{model}}$ & 3 words, each $d_{\mathrm{model}}$ wide \\
+$W_Q / W_K / W_V$ per head & $d_{\mathrm{model}} \times d_k$ & projects down to smaller slice \\
+Q, K, V per head & $3 \times d_k$ & each word gets a smaller representation \\
+Z per head & $3 \times d_k$ & same size as V \\
+Concatenated & $3 \times (\mathrm{heads} \times d_k)$ & $= 3 \times d_{\mathrm{model}}$ \\
+After $W_O$ & $3 \times d_{\mathrm{model}}$ & back to original width \\
+\hline
+\end{tabular}
+\end{center}
+
+$\mathrm{heads} \times d_k = d_{\mathrm{model}}$ is the key relationship that guarantees the dimensions stay consistent end-to-end.
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{In the above example, Q, K, V matrixes have dimension 4 * 2. Is it because each word is represented with 4 numbers and there are 2 heads?}
+
+\medskip
+
+Close, but not exactly. Let me be precise.
+
+$W_Q$, $W_K$, $W_V$ are shaped $(4 \times 2)$ where:
+
+\begin{itemize}
+\item \textbf{4 rows} $\to$ because the input vector for each word has 4 numbers ($d_{\mathrm{model}} = 4$). The matrix must accept 4 numbers in.
+\item \textbf{2 columns} $\to$ because $d_k = 2$, which is the size each head works with. Not directly ``because there are 2 heads'', but because $d_k = d_{\mathrm{model}} / \mathrm{heads} = 4/2 = 2$.
+\end{itemize}
+
+So the number of heads influences the 2 \textbf{indirectly} --- it determines how small each head's slice is. If you had 4 heads instead, $d_k$ would be $4/4 = 1$, and $W_Q$ would be $(4 \times 1)$.
+
+Also a small correction on terminology --- to be precise:
+
+\begin{itemize}
+\item $W_Q$, $W_K$, $W_V$ $\to$ the weight matrices, shape $(4 \times 2)$
+\item $Q$, $K$, $V$ $\to$ the result after multiplying X by those weights, shape $(3 \times 2)$
+\end{itemize}
+
+The 3 in Q, K, V comes from the number of words, not from the weight matrix itself.
+
+\begin{verbatim}
+X      .   W_Q   =   Q
+(3x4)     (4x2)     (3x2)
+ ^                    ^
+words              words, but now
+                   in d_k space
+\end{verbatim}
+
+\bigskip
+\hrule
+\bigskip
+
+\textbf{Now show me a concrete math example of multihead attention. Assume each word is represented with 2 numbers and head = 2.}
+
+\medskip
+
+\textbf{Setup}
+
+\begin{verbatim}
+Sentence : "The  cat  sat"   -> 3 words
+d_model  = 2
+heads    = 2
+d_k      = d_model / heads = 2/2 = 1
+\end{verbatim}
+
+\textbf{Input X --- shape $(3 \times 2)$:}
+
+\begin{verbatim}
+X = [1, 0]   <- "The"
+    [0, 1]   <- "cat"
+    [1, 1]   <- "sat"
+\end{verbatim}
+
+\medskip
+\textbf{Head 1}
+
+Weight matrices --- shape $(2 \times 1)$:
+
+\begin{verbatim}
+W_Q1 = [1]    W_K1 = [1]    W_V1 = [1]
+       [0]           [0]           [0]
+\end{verbatim}
+
+Head 1 focuses on the \textbf{first number} of each word's embedding.
+
+\textbf{Q1, K1, V1 = X $\cdot$ W --- shape $(3 \times 1)$:}
+
+\begin{verbatim}
+Q1 = K1 = V1 = [1]   <- "The"
+               [0]   <- "cat"
+               [1]   <- "sat"
+\end{verbatim}
+
+\textbf{Scores = Q1 $\cdot$ K1$^\top$ --- shape $(3\times1)\cdot(1\times3) = (3\times3)$:}
+
+\begin{verbatim}
+        The  cat  sat
+"The" [  1,   0,   1 ]
+"cat" [  0,   0,   0 ]
+"sat" [  1,   0,   1 ]
+\end{verbatim}
+
+\textbf{Scale by $\sqrt{d_k} = \sqrt{1} = 1$} $\to$ no change.
+
+\textbf{Softmax row by row:}
+
+\begin{verbatim}
+"The": [1, 0, 1] -> [0.42, 0.15, 0.42]
+"cat": [0, 0, 0] -> [0.33, 0.33, 0.33]
+"sat": [1, 0, 1] -> [0.42, 0.15, 0.42]
+\end{verbatim}
+
+\textbf{Z1 = A1 $\cdot$ V1 --- shape $(3\times3)\cdot(3\times1) = (3\times1)$:}
+
+\begin{verbatim}
+"The": 0.42x1 + 0.15x0 + 0.42x1 = 0.84
+"cat": 0.33x1 + 0.33x0 + 0.33x1 = 0.66
+"sat": 0.42x1 + 0.15x0 + 0.42x1 = 0.84
+
+Z1 = [0.84]   <- "The"
+     [0.66]   <- "cat"
+     [0.84]   <- "sat"
+\end{verbatim}
+
+\medskip
+\textbf{Head 2}
+
+Weight matrices --- shape $(2 \times 1)$:
+
+\begin{verbatim}
+W_Q2 = [0]    W_K2 = [0]    W_V2 = [0]
+       [1]           [1]           [1]
+\end{verbatim}
+
+Head 2 focuses on the \textbf{second number} of each word's embedding.
+
+\textbf{Q2, K2, V2 = X $\cdot$ W --- shape $(3 \times 1)$:}
+
+\begin{verbatim}
+Q2 = K2 = V2 = [0]   <- "The"
+               [1]   <- "cat"
+               [1]   <- "sat"
+\end{verbatim}
+
+\textbf{Scores = Q2 $\cdot$ K2$^\top$ --- shape $(3\times3)$:}
+
+\begin{verbatim}
+        The  cat  sat
+"The" [  0,   0,   0 ]
+"cat" [  0,   1,   1 ]
+"sat" [  0,   1,   1 ]
+\end{verbatim}
+
+\textbf{Softmax:}
+
+\begin{verbatim}
+"The": [0, 0, 0] -> [0.33, 0.33, 0.33]
+"cat": [0, 1, 1] -> [0.15, 0.42, 0.42]
+"sat": [0, 1, 1] -> [0.15, 0.42, 0.42]
+\end{verbatim}
+
+\textbf{Z2 = A2 $\cdot$ V2 --- shape $(3\times1)$:}
+
+\begin{verbatim}
+"The": 0.33x0 + 0.33x1 + 0.33x1 = 0.66
+"cat": 0.15x0 + 0.42x1 + 0.42x1 = 0.84
+"sat": 0.15x0 + 0.42x1 + 0.42x1 = 0.84
+
+Z2 = [0.66]   <- "The"
+     [0.84]   <- "cat"
+     [0.84]   <- "sat"
+\end{verbatim}
+
+\medskip
+\textbf{Concatenate Z1 and Z2 --- shape $(3 \times 2)$}
+
+\begin{verbatim}
+Z1      Z2      Concatenated
+[0.84]  [0.66]  ->  [0.84, 0.66]   <- "The"
+[0.66]  [0.84]  ->  [0.66, 0.84]   <- "cat"
+[0.84]  [0.84]  ->  [0.84, 0.84]   <- "sat"
+\end{verbatim}
+
+Shape: $(3 \times 2)$ \checkmark
+
+\medskip
+\textbf{Multiply by $W_O$ --- shape $(2 \times 2)$}
+
+\begin{verbatim}
+W_O = [1, 0]
+      [0, 1]
+\end{verbatim}
+
+(identity for simplicity --- in reality this is learned)
+
+\textbf{$Z_{\mathrm{final}}$ = Concat $\cdot$ $W_O$ --- shape $(3\times2)\cdot(2\times2) = (3\times2)$:}
+
+\begin{verbatim}
+Z_final = [0.84, 0.66]   <- "The"
+          [0.66, 0.84]   <- "cat"
+          [0.84, 0.84]   <- "sat"
+\end{verbatim}
+
+\medskip
+\textbf{Dimension Flow Summary}
+
+\begin{verbatim}
+X       W per head  Q/K/V    Scores   Z per head  Concat  W_O    Z_final
+(3x2) . (2x1)    = (3x1) -> (3x3) -> (3x1)    -> (3x2) . (2x2) = (3x2)
+\end{verbatim}
+
+$Z_{\mathrm{final}}$ is $(3 \times 2)$ --- same shape as input X. The FFN receives exactly this.
+
+\medskip
+\textbf{What the Two Heads Learned (intuitively)}
+
+Head 1 only saw the first number in each embedding --- ``The'' and ``sat'' both had 1 there, so they attended to each other strongly. Head 2 only saw the second number --- ``cat'' and ``sat'' both had 1, so they attended to each other. Two heads, two different relationships found simultaneously.

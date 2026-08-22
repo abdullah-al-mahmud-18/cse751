@@ -1,0 +1,232 @@
+\textbf{Before attention mechanism starts in transformers, positional encoding is calculated first. Right?}
+
+Yes, that's correct. The sequence is:
+
+\medskip
+Token $\rightarrow$ Embedding $\rightarrow$ + Positional Encoding $\rightarrow$ Attention
+\medskip
+
+Specifically: input tokens are first converted to dense vectors via the embedding layer, then positional encodings are \textbf{added} to those vectors element-wise, and \textit{that combined representation} is what gets fed into the attention mechanism.
+
+This happens only \textbf{once at the input} (before the first layer), not before every attention layer. The attention mechanism itself has no built-in sense of order, so positional encoding must be baked in beforehand.
+
+\bigskip
+
+\textbf{Why use sine for even and cos for odd positions in the word embedding?}
+
+The core reason is \textbf{relative position representability}.
+
+Using the trig identity:
+\begin{itemize}
+  \item $\sin(\text{pos} + k) = \sin(\text{pos}) \cdot \cos(k) + \cos(\text{pos}) \cdot \sin(k)$
+  \item $\cos(\text{pos} + k) = \cos(\text{pos}) \cdot \cos(k) - \sin(\text{pos}) \cdot \sin(k)$
+\end{itemize}
+
+This means \textbf{PE(pos + k) is a linear function of PE(pos)} for any fixed offset $k$. The model can learn to express ``k positions ahead'' as a linear transformation --- which is something attention weights can do easily.
+
+If you only used sine (or only cosine), you'd lose this property because sin alone is symmetric: $\sin(\theta) = \sin(\pi - \theta)$, so two different positions could produce the same value. \textbf{Pairing sin + cos at each frequency makes each position uniquely identifiable}, just like $(x, y)$ on a unit circle uniquely identifies an angle.
+
+\textbf{Intuitively:} each $(\sin, \cos)$ pair at frequency $i$ is like a 2D clock hand rotating at that frequency. Position 0 vs position 5 vs position 100 each land at different points on that circle. Stack many such clocks at different frequencies $\rightarrow$ a unique fingerprint per position.
+
+So the even/odd split isn't the deep insight --- the \textbf{pairing itself} is what matters. Even/odd is just the implementation convention chosen in the original paper.
+
+\bigskip
+
+\textbf{This means PE(pos + k) is a linear function of PE(pos) for any fixed offset k. The model can learn to express ``k positions ahead'' as a linear transformation. What do you mean by k positions ahead?}
+
+Say you have a sentence: \textbf{``The cat sat on the mat''}
+
+\begin{itemize}
+  \item ``cat'' is at position 1
+  \item ``sat'' is at position 2
+  \item ``on'' is at position 3
+\end{itemize}
+
+If $k = 2$, then from ``cat'' (pos=1), \textbf{``k positions ahead''} means ``on'' (pos=3).
+
+The point is: when the model is processing position \texttt{pos} and needs to \textbf{attend to} something 2 positions later, it doesn't have to learn a completely new representation for every pair of positions. Instead, because PE(pos + k) is a linear transformation of PE(pos), the model can learn \textbf{one general operation} --- ``shift by 2'' --- and apply it anywhere in the sequence.
+
+Without this property, the relationship between position 1 and position 3 would look completely unrelated to the relationship between position 50 and position 52, even though the \textbf{relative gap is the same}. The model would have to learn each pair independently.
+
+With it, relative distances are structurally consistent --- ``2 steps ahead'' always looks like the same kind of transformation, regardless of where you are in the sentence.
+
+\bigskip
+
+\textbf{Explain with an example. I am still not clear on this.}
+
+Let's use: \textbf{``The cat sat on the mat''} (positions 0--5)
+
+Using a simplified PE with just one frequency (just two numbers per position):
+
+\begin{center}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Word} & \textbf{Position} & \textbf{PE (sin, cos)} \\
+\hline
+cat & 1 & (0.84, 0.54)   \\
+sat & 2 & (0.91, -0.42)  \\
+on  & 3 & (0.14, -0.99)  \\
+the & 4 & (-0.76, -0.65) \\
+\hline
+\end{tabular}
+\end{center}
+
+Now let's say $k = 2$ (two positions ahead).
+
+There exists a \textbf{fixed matrix $M_2$} (depends only on $k=2$, not on position) such that:
+
+\medskip
+$M_2 \times \text{PE}(1) = \text{PE}(3)$ $\rightarrow$ Apply $M_2$ to ``cat'' $\rightarrow$ you get ``on'' $\checkmark$
+
+$M_2 \times \text{PE}(2) = \text{PE}(4)$ $\rightarrow$ Apply $M_2$ to ``sat'' $\rightarrow$ you get ``the'' $\checkmark$
+\medskip
+
+The \textbf{same matrix} works from any starting position. ``2 steps ahead'' is always the same transformation.
+
+\medskip
+\textbf{Why does this matter for the model?}
+
+Without this property:
+\begin{itemize}
+  \item The gap between pos 1 and pos 3 looks numerically unrelated to the gap between pos 2 and pos 4.
+  \item The model has to separately learn what ``2 apart'' means for every pair --- which is expensive and doesn't generalize.
+\end{itemize}
+
+With this property:
+\begin{itemize}
+  \item The model learns \textbf{one operation} for ``2 apart'' and it works everywhere in the sequence.
+  \item So when attention weights are computed, relative distances are structurally consistent --- the model can generalize ``these two words are 2 apart'' without memorizing every case.
+\end{itemize}
+
+That's the practical payoff of PE(pos + k) being a linear function of PE(pos).
+
+\bigskip
+
+\textbf{You talked about a matrix M. Where does this come from?}
+
+It comes directly from \textbf{trig identities} --- it's not learned, it's mathematically derivable.
+
+At a single frequency $\omega$, PE(pos) is just:
+
+\[
+\text{PE}(\text{pos}) = \begin{pmatrix} \sin(\text{pos} \cdot \omega) \\ \cos(\text{pos} \cdot \omega) \end{pmatrix}
+\]
+
+Now expand PE(pos + k) using the angle addition identities:
+
+\begin{itemize}
+  \item $\sin((\text{pos}+k) \cdot \omega) = \sin(\text{pos} \cdot \omega) \cdot \cos(k \cdot \omega) + \cos(\text{pos} \cdot \omega) \cdot \sin(k \cdot \omega)$
+  \item $\cos((\text{pos}+k) \cdot \omega) = \cos(\text{pos} \cdot \omega) \cdot \cos(k \cdot \omega) - \sin(\text{pos} \cdot \omega) \cdot \sin(k \cdot \omega)$
+\end{itemize}
+
+Write this as a matrix multiplication:
+
+\[
+\text{PE}(\text{pos} + k) = M_k \times \text{PE}(\text{pos}), \quad \text{where } M_k = \begin{pmatrix} \cos(k\omega) & \sin(k\omega) \\ -\sin(k\omega) & \cos(k\omega) \end{pmatrix}
+\]
+
+\textbf{Key observation:} every entry in $M_k$ depends only on \textbf{$k$ and $\omega$} --- not on \texttt{pos} at all. So the same matrix works from any starting position.
+
+This $M_k$ is actually a \textbf{rotation matrix} --- it rotates the $(\sin, \cos)$ vector by angle $k \cdot \omega$. Which also explains the ``clock hand'' intuition: shifting $k$ positions forward is literally rotating the clock hand by a fixed angle.
+
+So to directly answer your question: \textbf{M comes from algebra}, not from the model. It's a consequence of choosing sin/cos --- those functions happen to have this rotation property baked in. That's precisely \textit{why} sin/cos were chosen in the first place.
+
+\bigskip
+
+\textbf{PE(pos + k) = M\_k $\times$ PE(pos). Explain this. Is this a trigonometry thing?}
+
+Yes, purely trig. Let me unpack it mechanically.
+
+PE(pos) is a \textbf{2D column vector}:
+
+\[
+\text{PE}(\text{pos}) = \begin{pmatrix} \sin(\text{pos} \cdot \omega) \\ \cos(\text{pos} \cdot \omega) \end{pmatrix}
+\]
+
+$M_k$ is a \textbf{2$\times$2 matrix}:
+
+\[
+M_k = \begin{pmatrix} \cos(k\omega) & \sin(k\omega) \\ -\sin(k\omega) & \cos(k\omega) \end{pmatrix}
+\]
+
+Now do the multiplication $M_k \times \text{PE}(\text{pos})$ row by row:
+
+\textbf{Row 1:}
+\[
+\cos(k\omega) \cdot \sin(\text{pos} \cdot \omega) + \sin(k\omega) \cdot \cos(\text{pos} \cdot \omega) = \sin((\text{pos}+k)\omega)
+\]
+
+\textbf{Row 2:}
+\[
+-\sin(k\omega) \cdot \sin(\text{pos} \cdot \omega) + \cos(k\omega) \cdot \cos(\text{pos} \cdot \omega) = \cos((\text{pos}+k)\omega)
+\]
+
+So the result is:
+
+\[
+\begin{pmatrix} \sin((\text{pos}+k)\omega) \\ \cos((\text{pos}+k)\omega) \end{pmatrix} = \text{PE}(\text{pos} + k)
+\]
+
+Those two expansions in Row 1 and Row 2 \textbf{are exactly the angle addition formulas} from trigonometry:
+\begin{itemize}
+  \item $\sin(A+B) = \sin A \cdot \cos B + \cos A \cdot \sin B$
+  \item $\cos(A+B) = \cos A \cdot \cos B - \sin A \cdot \sin B$
+\end{itemize}
+
+So $\text{PE}(\text{pos} + k) = M_k \times \text{PE}(\text{pos})$ is just those trig identities \textbf{written in matrix form}. The matrix notation doesn't add new math --- it just packages the identities compactly to show that shifting position by $k$ is a single linear operation on the PE vector.
+
+\bigskip
+
+\textbf{What do you mean by PE(pos) and PE(pos + k)?}
+
+PE(pos) means \textbf{the positional encoding vector of the word at position \texttt{pos}}.
+
+Concrete example with our sentence: \textbf{``The cat sat on the mat''}
+
+\begin{itemize}
+  \item PE(1) = the positional encoding vector of \textbf{``cat''} (position 1)
+  \item PE(3) = the positional encoding vector of \textbf{``on''} (position 3)
+\end{itemize}
+
+So when we write \textbf{PE(pos + k)} with pos=1 and k=2:
+
+\medskip
+$\text{PE}(1 + 2) = \text{PE}(3)$ = the positional encoding vector of \textbf{``on''}
+\medskip
+
+In other words:
+\begin{itemize}
+  \item \texttt{pos} is just a \textbf{position index} (0, 1, 2, 3\ldots)
+  \item \texttt{PE(pos)} is the \textbf{vector assigned to that position} using the sin/cos formula
+  \item \texttt{PE(pos + k)} is the \textbf{vector assigned to the position $k$ steps later}
+\end{itemize}
+
+So the whole statement $\text{PE}(\text{pos} + k) = M_k \times \text{PE}(\text{pos})$ simply means:
+
+\medskip
+``The encoding of the word at position 3 can be obtained by applying matrix M to the encoding of the word at position 1''
+\medskip
+
+It's a relationship \textbf{between two encoding vectors} at two different positions.
+
+\bigskip
+
+\textbf{When we are processing (It can be anything) a word at position pos and we need another word at position pos + k, We don't need to recalculate the entire positional encoding for pos + k. We just need to apply matrix M. This is the advantage of using sin and cos. Is my understanding correct?}
+
+Your intuition is in the right direction, but the framing needs a small correction.
+
+In practice, \textbf{positional encodings are precomputed for all positions upfront} before any processing happens. So there's no runtime recalculation to avoid --- PE(pos+k) is already sitting there, computed directly from the sin/cos formula.
+
+\medskip
+The \textbf{actual advantage} is different, and it's about the \textbf{attention mechanism}, not computation.
+
+When attention computes how much word at \texttt{pos} should attend to word at \texttt{pos+k}, it works with their vectors. Because $\text{PE}(\text{pos}+k) = M_k \times \text{PE}(\text{pos})$, the relationship between any two positions that are $k$ apart is \textbf{always the same linear transformation}.
+
+So the model learns \textbf{one general concept} --- ``these two words are $k$ apart'' --- and it applies everywhere. Position 1 attending to position 3 looks structurally identical to position 50 attending to position 52, because the same $M_k$ connects them.
+
+\medskip
+In short:
+\begin{itemize}
+  \item Your version: sin/cos saves recomputation $\rightarrow$ \textbf{not quite}, PEs are precomputed anyway
+  \item Correct version: sin/cos makes relative distances \textbf{structurally consistent}, so the attention mechanism can generalize relative positions instead of memorizing every pair independently
+\end{itemize}
