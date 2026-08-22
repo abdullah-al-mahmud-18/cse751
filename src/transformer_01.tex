@@ -1,0 +1,116 @@
+\section{Transformer}
+
+\textbf{In transformer architechture, the encoders and decoders are also neural networks. is that correct?}
+
+Yes, but with precision: the encoder and decoder are not separate standalone neural networks --- they are \textbf{stacked layers that together form the transformer}, which is itself a neural network.
+
+Each encoder block contains:
+\begin{itemize}
+  \item A \textbf{multi-head self-attention} layer
+  \item A \textbf{feed-forward neural network} (a small 2-layer fully connected network)
+\end{itemize}
+
+Each decoder block contains those two, plus:
+\begin{itemize}
+  \item A \textbf{cross-attention} layer (attends to the encoder's output)
+\end{itemize}
+
+So the whole transformer --- encoder stack + decoder stack --- is one neural network trained end-to-end. The ``encoder'' and ``decoder'' are just architectural roles within it, not independently trained nets.
+
+\medskip
+
+\textbf{Is transformer a seq2seq architechture as well?}
+
+Yes. The original transformer (Vaswani et al., 2017) was explicitly designed as a seq2seq model --- it takes a sequence as input and produces a sequence as output (e.g., translating a sentence from English to German).
+
+The key difference from earlier seq2seq models (like RNN/LSTM-based ones) is \textbf{how} it processes sequences --- in parallel via attention, rather than step-by-step recurrently.
+
+That said, not all transformers today are seq2seq:
+
+\begin{itemize}
+  \item \textbf{Encoder-only} (e.g., BERT) --- takes a sequence, outputs contextual representations. Used for classification, NER, etc.
+  \item \textbf{Decoder-only} (e.g., GPT) --- takes a sequence, generates the next token autoregressively. Used for language generation.
+  \item \textbf{Encoder-decoder} (e.g., original Transformer, T5, BART) --- true seq2seq. Used for translation, summarization, etc.
+\end{itemize}
+
+So ``transformer'' is a broader architectural family; seq2seq is one configuration of it.
+
+\medskip
+
+\textbf{In the ``Attention is all you need'' paper, the encoding component was a stack of 6 encoders. Here what exactly is meant by 6 encoders? Is it 6 neural networks stacked?}
+
+``6 encoders'' means \textbf{6 identical-in-structure blocks stacked sequentially}, where the output of one block becomes the input of the next.
+
+Each block has its own \textbf{independent weights} --- they don't share parameters. So they're not copies of each other at runtime, even though they have the same architecture.
+
+But they're not 6 separate neural networks in any meaningful sense. It's \textbf{one neural network} with 6 repeated architectural units. The whole stack is trained end-to-end together via backpropagation --- gradients flow through all 6 blocks in one pass.
+
+\textbf{Why stack 6?} Each layer learns increasingly abstract representations. Early layers might capture syntax, later layers semantics --- similar to how deep CNNs learn edges $\rightarrow$ textures $\rightarrow$ objects. The number 6 was an empirical choice; more layers generally means more capacity, but with diminishing returns and higher compute cost.
+
+\medskip
+
+\textbf{by 6 neural networks I don't mean 6 different neural networks. It can be same or different. What I want to know is were there 6 neural networks or not?}
+
+Yes. There are 6 encoder blocks, each with its own independent weights, and each qualifies as a neural network. So yes --- 6 neural networks stacked sequentially.
+
+\medskip
+
+\textbf{Previously you said 1 neural network that is repeated 6 times as architechtural units. Was any special kind of neural network used like RNN or LSTM?}
+
+On the contradiction --- both statements are valid depending on the lens. The whole transformer is one end-to-end trained network; each block is also individually a neural network. It's a matter of framing, not a factual conflict.
+
+\textbf{On your actual question:} No RNNs or LSTMs. That's precisely the point of the paper --- it replaced them entirely.
+
+Each encoder block uses:
+\begin{itemize}
+  \item \textbf{Multi-head self-attention} --- not a recurrent network. It processes all tokens in the sequence simultaneously using Query, Key, Value matrix operations.
+  \item \textbf{Feed-forward network} --- a simple 2-layer fully connected (dense) network, i.e., a basic MLP. Applied independently to each position.
+\end{itemize}
+
+RNNs/LSTMs process sequences step-by-step, which is slow and struggles with long-range dependencies. The transformer eliminates that by using attention to relate any two positions in the sequence directly, regardless of distance --- all in parallel.
+
+\medskip
+
+\textbf{I see encoder has following components: Multi Head Self Attention, Add \& Norm, Feed Forward Neural Network and another Add \& Norm. This makes one encoder. So, all these components were repeated 6 times in the original paper. Right?}
+
+Yes, exactly right. One encoder block = Multi-Head Self-Attention $\rightarrow$ Add \& Norm $\rightarrow$ Feed-Forward Network $\rightarrow$ Add \& Norm. That entire block was repeated 6 times in the original paper.
+
+\medskip
+
+\textbf{Does an Encoder itself does the job of word embedding?}
+
+No. Word embedding happens \textbf{before} the encoder stack. The input tokens are first converted to vectors via an \textbf{embedding layer}, then \textbf{positional encoding} is added to inject sequence order information. Only after these two steps does the result get fed into the first encoder block.
+
+The encoder's job is to \textbf{transform and contextualize} those embeddings --- not to create them.
+
+\medskip
+
+\textbf{In Jay Alammar blogs he says ``The embedding only happens in the bottom-most encoder. The abstraction that is common to all the encoders is that they receive a list of vectors each of the size 512 -- In the bottom encoder that would be the word embeddings, but in other encoders, it would be the output of the encoder that's directly below. The size of this list is hyperparameter we can set -- basically it would be the length of the longest sentence in our training dataset.'' Why does he say that the embedding only happens in the bottom most encoder?}
+
+It's a \textbf{pedagogical framing choice} by Jay Alammar, not a claim that the embedding layer is literally inside the encoder block.
+
+What he means is:
+\begin{itemize}
+  \item Raw tokens enter the system only once --- at the \textbf{bottom of the stack}
+  \item That's where embedding + positional encoding happens, right before the first encoder block processes them
+  \item Encoders 2 through 6 never see raw tokens --- they receive the \textbf{output vector from the encoder below them}
+\end{itemize}
+
+So he's associating the embedding step with the bottom encoder because that's the entry point of the whole stack. It's describing \textbf{data flow}, not saying the encoder block itself contains the embedding layer.
+
+The factual picture remains the same as before --- embedding is a separate step that feeds into the first encoder. Jay Alammar is just grouping it conceptually with the bottom encoder to make the layered flow easier to visualize.
+
+\medskip
+
+\textbf{Is the multihead attension in encoder same as self attention?}
+
+Yes. In the encoder, multi-head attention \textbf{is} self-attention --- the ``multi-head'' part just describes \textbf{how} it's implemented.
+
+\begin{itemize}
+  \item \textbf{Self-attention} means the Queries, Keys, and Values all come from the \textbf{same sequence} (the input itself). Each token attends to every other token in the same sequence.
+  \item \textbf{Multi-head} means this self-attention operation is run \textbf{multiple times in parallel} with different learned weight matrices, then the results are concatenated and projected. This allows the model to attend to different aspects of the sequence simultaneously.
+\end{itemize}
+
+So multi-head attention in the encoder = self-attention, done multiple times in parallel.
+
+The term ``multi-head attention'' becomes important to distinguish in the \textbf{decoder}, where one of its attention layers is \textbf{cross-attention} --- Queries come from the decoder, but Keys and Values come from the encoder output. That one is not self-attention.
