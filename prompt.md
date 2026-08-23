@@ -10,3 +10,5 @@ Create a latex file from above conversation. Follow below rules:
 \textbf{My question or message. Do not rephrase.}
 Your exact answer. Do not rephrase.
 ```
+
+1. Explain data flow page 14 of lecture slide.
