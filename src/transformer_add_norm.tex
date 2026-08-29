@@ -1,0 +1,136 @@
+\bigskip
+
+\textbf{In multihead self attention we get \texttt{z}. In the encoder I see the \texttt{z} goes into Add and Norm component. What happens here?}
+
+Two things happen in sequence: a \textbf{residual connection (Add)}, then \textbf{layer normalization (Norm)}.
+
+\bigskip
+\textbf{Add --- Residual Connection}
+
+Let's say the input to the Multi-Head Self-Attention was \textbf{X}, and the output was \textbf{z} (i.e., MHA(X)). The Add step computes:
+
+\[
+X' = X + z
+\]
+
+You're not replacing the original representation with the attention output --- you're adding the attention output \textit{on top of} the original. This preserves what the word already ``knew'' before attention, and layers in what attention learned about context.
+
+The practical benefit: during training, gradients can flow directly back through the $+$ shortcut, bypassing the attention sublayer entirely. This prevents the \textbf{vanishing gradient problem}, which is a serious issue in deep networks where learning signals shrink to near-zero as they travel backward through many layers.
+
+\bigskip
+\textbf{Norm --- Layer Normalization}
+
+After adding, layer normalization is applied to $X'$. It rescales the numbers in each word's representation so they sit in a stable, consistent range.
+
+Without this, after many encoder blocks, values can drift very large or very small, making training unstable. Layer norm acts like a pressure valve --- keeping the numbers well-behaved after every sublayer.
+
+\bigskip
+\textbf{Where this sits in the full block}
+
+After this first Add \& Norm, the output $X'$ goes into the \textbf{Feed-Forward Network}. Then \textit{another} Add \& Norm is applied after the FFN for the same reasons. So every sublayer in the encoder block is wrapped in this same residual + normalize pattern.
+
+
+\bigskip\bigskip
+\textbf{List the main reasons of residual connection and layer normalization.}
+
+\textbf{Residual Connection (Add)}
+
+\begin{itemize}
+    \item \textbf{Prevents vanishing gradients} --- gradients can flow directly back through the $+$ shortcut during training, without having to pass through the attention sublayer. Deep networks without this tend to have learning signals shrink to near-zero by the time they reach early layers.
+    \item \textbf{Preserves original information} --- the word's representation before attention isn't discarded. The attention output is added \textit{on top}, so both the original and the new context-aware information are retained.
+    \item \textbf{Makes deeper networks trainable} --- stacking 6 (or more) encoder blocks would be very hard to train without residual connections. They're what make deep transformer stacks practically usable.
+\end{itemize}
+
+\bigskip
+\textbf{Layer Normalization (Norm)}
+
+\begin{itemize}
+    \item \textbf{Prevents numerical instability} --- after repeated additions and transformations across many layers, values can drift very large or very small. Layer norm rescales them back to a controlled range after every sublayer.
+    \item \textbf{Stabilizes training} --- consistent value ranges mean the model learns more smoothly and reliably, without the loss spiking or collapsing.
+    \item \textbf{Applied per token, independently} --- unlike batch normalization (which normalizes across the batch dimension), layer norm normalizes across the feature dimension of each token individually. This works well for variable-length sequences where batch statistics are unreliable.
+\end{itemize}
+
+
+\bigskip\bigskip
+\textbf{In the residual connection we add attention output on top of original representation. But original representation did not have attention in it. So doesn't it affect the output of attention badly?}
+
+Good challenge. The intuition behind the concern makes sense, but here's why it doesn't hurt:
+
+\textbf{Attention output is trained as an additive correction, not a replacement.}
+
+The model is trained end-to-end, knowing that the residual addition will happen. So MHA(X) doesn't try to be a \textit{complete} new representation --- it's optimized to produce \textit{what needs to be added} to X to make it better. Think of it as a delta, not a full rewrite.
+
+\[
+X' = X + \text{MHA}(X)
+\]
+
+$X$ carries: token identity + positional information.\\
+MHA$(X)$ carries: contextual updates --- what each word learned from attending to others.\\
+$X'$ carries both. Neither cancels the other.
+
+\bigskip
+\textbf{The mixing is the point.}
+
+The original representation $X$ already knows \textit{what word this is} and \textit{where it sits}. What it's missing is \textit{how it relates to other words in context}. Attention fills exactly that gap. Adding them together gives you a representation that is both identity-aware and context-aware simultaneously.
+
+If you discarded $X$ and only kept MHA$(X)$, you'd actually risk losing precise token-level information --- attention is a weighted average over all positions, which can blur individual token identity.
+
+\bigskip
+\textbf{The network compensates automatically.}
+
+Since training is end-to-end, the attention layers learn to produce outputs that are \textit{complementary} to $X$, not redundant or conflicting with it. If the original $X$ already captures something well, the model learns to produce small corrections there. Where context matters more, attention contributes more. The balance is learned, not fixed.
+
+
+\bigskip\bigskip
+\textbf{In layer normalization we are keeping the numbers to a certain range. Let's say a vector is [2,4,5,1] and we turn it into [0.3, 0.45, 0.7, 0.1]. Isn't the vector loosing information when we are changing the numbers?}
+
+This is a sharp question, and the answer has two parts.
+
+\bigskip
+\textbf{What layer norm actually preserves}
+
+The \textit{relative structure} of the vector --- which dimensions are large, which are small, and by how much --- is fully preserved. The pattern of the vector doesn't change, only its scale and center shift.
+
+So $[2, 4, 5, 1]$ normalized doesn't lose the fact that the 3rd element was the dominant one and the 4th was the weakest. That relationship survives intact.
+
+\bigskip
+\textbf{What it does lose --- and why that's okay}
+
+It does discard the absolute magnitude. After normalization, you can't tell if the original values were in the range $[1, 5]$ or $[100, 500]$.
+
+But absolute magnitude of activations across layers carries no inherent semantic meaning. What the model encodes semantically lives in the \textit{relative pattern} of the vector --- which dimensions are more activated than others. That is preserved.
+
+\bigskip
+\textbf{Layer norm has learnable parameters that compensate}
+
+After normalizing, layer norm applies two learnable parameters per dimension:
+
+\begin{itemize}
+    \item $\gamma$ \textbf{(scale)} --- rescales each dimension
+    \item $\beta$ \textbf{(shift)} --- shifts each dimension
+\end{itemize}
+
+These are trained alongside the rest of the model. So if a certain scale was actually important, the model learns to restore it through $\gamma$. The normalization step just puts everything into a clean, stable baseline --- then $\gamma$ and $\beta$ reshape it into whatever the network actually needs.
+
+\bigskip
+\textbf{In short:} the structurally meaningful part (relative pattern) is preserved. The part that's lost (absolute scale) is either unimportant or recoverable through learned parameters.
+
+
+\bigskip\bigskip
+\textbf{Relative pattern of the vectors are important than absolute magnitude because when we are representing words with vectors we care about angular distance between two vectors to find out similarity or dissimilarity, not magnitude of the vectors. Is this the correct?}
+
+Yes, that reasoning is essentially correct.
+
+In vector representations of words, similarity is measured by \textbf{cosine similarity} --- which only depends on the angle between two vectors, not their magnitudes. So two vectors pointing in the same direction are considered identical in meaning regardless of whether their magnitudes are 1 or 1000.
+
+This is exactly why absolute magnitude being lost in layer norm doesn't hurt --- the semantically meaningful information lives in the \textit{direction} of the vector (which dimensions dominate, and by how much relative to each other), and that directional structure is what layer norm preserves.
+
+\bigskip
+\textbf{One small nuance to be precise:}
+
+Layer norm doesn't just rescale --- it also \textbf{mean-centers} (subtracts the mean of the vector). So it's not purely angle-preserving in the strict mathematical sense the way L2 normalization would be. It shifts the vector too.
+
+But the practical effect is the same: the relative relationships between dimensions --- the pattern --- survive, and the model can recover any needed scale through the learned $\gamma$ and $\beta$ parameters.
+
+\bigskip
+So your intuition is correct: the reason absolute magnitude is safe to discard is precisely because the representation system is built around angular distance, not Euclidean magnitude.
