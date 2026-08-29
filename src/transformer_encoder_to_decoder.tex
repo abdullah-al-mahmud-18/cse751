@@ -1,0 +1,187 @@
+\bigskip
+
+\textbf{The picture of the decoder in transoformer architechture shows ``Outputs (shifted right)''. What does it mean?}
+
+\medskip
+
+It's about how the decoder receives its input during \textbf{training}.
+
+\bigskip
+
+\textbf{The core idea:} The decoder is trained to predict the next word at every position simultaneously. To do this without cheating, the target sequence is shifted one position to the right before being fed in.
+
+\bigskip
+
+\textbf{Example} --- suppose the target (correct translation) is: \texttt{I am happy}
+
+\begin{center}
+\begin{tabular}{ll}
+\textbf{Decoder Input (shifted right)} & \textbf{Decoder Output (what it should predict)} \\[4pt]
+\texttt{[START]} & \texttt{I} \\
+\texttt{[START] I} & \texttt{am} \\
+\texttt{[START] I am} & \texttt{happy} \\
+\texttt{[START] I am happy} & \texttt{[END]} \\
+\end{tabular}
+\end{center}
+
+So at each position $t$, the decoder sees all tokens \textit{before} $t$ and predicts token $t$. The shift guarantees that at no point does the model see the token it's trying to predict.
+
+\bigskip
+
+\textbf{Why shift instead of just feeding the full target?}
+
+Without the shift, position $t$ would have the ground truth token right there in the input --- it could just copy it instead of learning to predict it. The shift enforces the rule: \textit{predict the next token from everything before it.}
+
+\bigskip
+
+\textbf{How ``shifted right'' is enforced mechanically:}
+
+The decoder's first sublayer is \textbf{Masked Multi-Head Attention}. The mask zeroes out attention weights to future positions, so even if somehow tokens were misaligned, the model still cannot attend to any position $\geq t$ when predicting at position $t$.
+
+\bigskip
+
+\textbf{During inference} (actual use), there is no target to shift --- the decoder generates tokens one by one, feeding each newly generated token back in as the next input. The ``shifted right'' is a training-time concept; the autoregressive loop replaces it at test time.
+
+\bigskip
+\bigskip
+
+\textbf{During inference there are no given target. Are the inputs of the decoder still shifted?}
+
+\medskip
+
+During inference, ``shifted right'' doesn't apply as an explicit operation --- but the \textbf{same structure holds naturally}.
+
+Here's what happens step by step:
+
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Step} & \textbf{Decoder Input} & \textbf{Predicts} \\[4pt]
+1 & \texttt{[START]} & \texttt{I} \\
+2 & \texttt{[START] I} & \texttt{am} \\
+3 & \texttt{[START] I am} & \texttt{happy} \\
+4 & \texttt{[START] I am happy} & \texttt{[END]} \\
+\end{tabular}
+\end{center}
+
+At every step, the decoder receives only what it has already generated (starting with \texttt{[START]}), and predicts the next token. That's the same pattern as training --- it's just happening one step at a time instead of all at once.
+
+\bigskip
+
+\textbf{The key difference between training and inference:}
+
+\begin{itemize}
+    \item \textbf{Training:} The full target is available, so the model processes all positions \textit{in parallel} using the shifted input + mask to simulate sequential generation.
+    \item \textbf{Inference:} No full target exists, so the model genuinely runs \textit{step by step}, appending each new prediction before the next step.
+\end{itemize}
+
+The ``shifted right'' label is a training-time description of how the input is prepared. During inference, that structure emerges automatically from the autoregressive loop --- you don't need to explicitly shift anything because you're building the sequence one token at a time anyway.
+
+\bigskip
+\bigskip
+
+\textbf{So, during training the decoder generates all token parallelly? That means the sentence ``I am happy'' will be generated all at once?}
+
+\medskip
+
+Yes, exactly. During training, all three tokens are predicted in one forward pass.
+
+The decoder receives \texttt{[START] I am happy} (the shifted target) and outputs predictions at all positions simultaneously:
+
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Position} & \textbf{Input token seen} & \textbf{Predicts} \\[4pt]
+1 & \texttt{[START]} & \texttt{I} \\
+2 & \texttt{[START] I} & \texttt{am} \\
+3 & \texttt{[START] I am} & \texttt{happy} \\
+\end{tabular}
+\end{center}
+
+All three predictions happen in parallel. The \textbf{mask} is what makes this safe --- at position 2, even though \texttt{am} and \texttt{happy} are physically present in the input matrix, the mask blocks attention to them. So position 2 effectively only ``sees'' \texttt{[START] I}.
+
+\bigskip
+
+\textbf{Why do it this way?}
+
+Inference is inherently sequential --- you can't avoid it because you don't have the target. But training \textit{doesn't have to be} sequential. You already know the full correct target, so you can simulate all steps at once using the mask. This makes training \textbf{much faster} --- one forward pass computes the loss for every position rather than running the decoder $T$ times for a sequence of length $T$.
+
+This technique is called \textbf{teacher forcing} --- feeding the ground truth tokens as input instead of the model's own previous predictions.
+
+\bigskip
+\bigskip
+
+\textbf{On page 14 of \texttt{4\_Seq2seq\_transformers.pptx.pdf} file, there are 6 encoders and 6 decoders. Let's name them e1 to e6 and d1 to d6. I see the output from e6 goes to all decoder from d1 to d6. And, d2 to d6 is also receiving input from their previous decoders. Why is that?}
+
+\medskip
+
+These are two separate things happening for two different reasons.
+
+\bigskip
+
+\textbf{1. Why $e_6$'s output goes to ALL decoders ($d_1$ through $d_6$)}
+
+Each decoder block has a cross-attention sublayer. Cross-attention needs K and V from the encoder, and Q from the decoder. The encoder's job is fully done after $e_6$ --- it has produced the richest, most complete understanding of the source sentence. So $e_6$'s output is converted into K and V matrices once, and those \textbf{same K and V are shared with every decoder block}.
+
+Every decoder layer needs to ask ``which part of the source sentence matters right now?'' --- so every layer needs access to the encoder output. $d_1$ uses it, $d_2$ uses it, \ldots, $d_6$ uses it. All of them, independently.
+
+\bigskip
+
+\textbf{2. Why $d_2$--$d_6$ also receive input from their previous decoder}
+
+This is simply the \textbf{stacked architecture} --- exactly like the encoder stack. The output of $d_1$ flows into $d_2$ as input, $d_2$'s output flows into $d_3$, and so on. Each decoder block refines the representation a bit more, just like $e_1 \rightarrow e_2 \rightarrow \cdots \rightarrow e_6$ did on the encoder side.
+
+So $d_n$'s input is the output of $d_{n-1}$, which it first runs through masked self-attention, then cross-attention (using $e_6$'s K and V), then FFN --- and passes the result up to $d_{n+1}$.
+
+\bigskip
+
+\textbf{Summary in one line each:}
+
+\begin{itemize}
+    \item $e_6 \rightarrow$ all decoders: because \textbf{every decoder layer needs to cross-attend to the source}
+    \item $d_{n-1} \rightarrow d_n$: because \textbf{decoders are stacked, each refining the representation further}
+\end{itemize}
+
+\bigskip
+\bigskip
+
+\textbf{e1 receives unprocessed input. I understand that each layer above e1 refines what e1 has learned. But once the output of e6 goes into d1 and d1 receiving shifted target, shouldn't d1 already generate the output? What is d1 generating? And what does it pass to d2?}
+
+\medskip
+
+Great question, and the answer directly mirrors why the encoder needs 6 layers too.
+
+\bigskip
+
+\textbf{$d_1$ does not generate the final tokens.} No individual decoder block does. Token prediction (via linear + softmax) only happens after $d_6$'s output. Every decoder block --- $d_1$ through $d_6$ --- outputs a \textbf{matrix of hidden representations}, not words.
+
+Specifically, $d_1$ receives:
+\begin{itemize}
+    \item The shifted target embeddings (e.g., \texttt{[START] I am happy} as vectors)
+    \item $e_6$'s K and V (for cross-attention)
+\end{itemize}
+
+And it outputs: a matrix of the \textbf{same shape} --- one vector per target position --- but now each vector has been enriched by:
+\begin{enumerate}
+    \item Masked self-attention (target tokens attending to each other)
+    \item Cross-attention (target tokens attending to the source via $e_6$)
+    \item FFN (deeper non-linear transformation)
+\end{enumerate}
+
+This enriched matrix is what gets passed to $d_2$.
+
+\bigskip
+
+\textbf{So what is $d_1$ actually doing if not predicting words?}
+
+It's building a \textbf{preliminary contextual representation} of the target sequence in relation to the source. Think of it in layers of abstraction:
+
+\begin{itemize}
+    \item $d_1$ might learn rough source-target alignments and basic syntactic dependencies
+    \item $d_3$/$d_4$ refine those into more nuanced contextual relationships
+    \item $d_5$/$d_6$ produce highly abstract representations ready for final prediction
+\end{itemize}
+
+This is identical to the encoder: $e_1$ sees raw embeddings and could theoretically output something, but it takes 6 layers of refinement to produce the rich $H$ that the decoder actually uses.
+
+\bigskip
+
+\textbf{One-line summary:} $d_1$ outputs a refined hidden representation matrix (not words), passes it to $d_2$ as input, and this refinement continues until $d_6$ hands off to the linear + softmax for actual token prediction.
