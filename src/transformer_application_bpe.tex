@@ -1,0 +1,582 @@
+\bigskip
+
+\textbf{For what type of tasks transformer architecture was used in the original paper?}
+
+The original paper introduced the Transformer specifically for \textbf{sequence transduction} --- tasks where you map an input sequence to an output sequence. The primary task was \textbf{machine translation} (English$\to$German and English$\to$French on the WMT 2014 benchmarks). They also demonstrated it generalizes to \textbf{English constituency parsing}, but that was secondary, just to show the architecture isn't translation-specific.
+
+\bigskip
+
+\textbf{Let's say we are training a transformer to translate from English to Spanish. English sentence is ``The dog sat'' and Spanish is ``El perro se sent\'{o}.'' Assume sixth encoder (e6) has given it's output to d1 (first decoder layer) and d1 has received positional embedding of target. Now show me concrete example of Masked multi head attention inside the decoder.}
+
+\noindent\textbf{Setup}
+
+\noindent\textbf{Tokens:} Decoder receives \texttt{<SOS>}, ``El'', ``perro'' (3 tokens, simplified from the full target).
+During training, the \textbf{full target is fed at once} (teacher forcing), but masking enforces left-to-right causality --- token at position $i$ cannot attend to any position $j > i$.
+
+\noindent\textbf{Dimensions:} $d_{\text{model}} = 4$, 2 heads $\to d_k = d_v = 2$
+
+\noindent\textbf{Input embeddings + positional encoding:}
+
+\[
+x_0\ (\texttt{<SOS>}) = [1,\ 0,\ 1,\ 0]
+\]
+\[
+x_1\ (\texttt{El}) = [0,\ 1,\ 0,\ 1]
+\]
+\[
+x_2\ (\texttt{perro}) = [1,\ 1,\ 0,\ 0]
+\]
+
+\medskip
+\noindent\textbf{Head 1 --- attends to dims 0--1}
+
+Weight matrices project to first 2 dimensions, giving:
+
+\[
+Q_1 = K_1 = V_1 = \begin{bmatrix}1 & 0\\0 & 1\\1 & 1\end{bmatrix}
+\]
+
+\noindent\textbf{Raw scores} $= Q_1 K_1^\top$:
+
+\begin{center}
+\begin{tabular}{c|ccc}
+ & $k_0$ & $k_1$ & $k_2$ \\
+$q_0$ & 1 & 0 & 1 \\
+$q_1$ & 0 & 1 & 1 \\
+$q_2$ & 1 & 1 & 2 \\
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Scale} by $\frac{1}{\sqrt{2}} \approx 0.707$:
+
+\begin{center}
+\begin{tabular}{c|ccc}
+ & $k_0$ & $k_1$ & $k_2$ \\
+$q_0$ & 0.71 & 0.00 & 0.71 \\
+$q_1$ & 0.00 & 0.71 & 0.71 \\
+$q_2$ & 0.71 & 0.71 & 1.41 \\
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Apply causal mask} --- future positions $\to -\infty$:
+
+\begin{center}
+\begin{tabular}{c|ccc}
+ & $k_0$ & $k_1$ & $k_2$ \\
+$q_0$ & 0.71 & $-\infty$ & $-\infty$ \\
+$q_1$ & 0.00 & 0.71 & $-\infty$ \\
+$q_2$ & 0.71 & 0.71 & 1.41 \\
+\end{tabular}
+\end{center}
+
+$-\infty$ becomes 0 after softmax --- those positions are completely blocked.
+
+\noindent\textbf{Softmax row by row:}
+
+\begin{itemize}
+\item \texttt{<SOS>} (row 0): only one finite value $\to [1.000,\ 0.000,\ 0.000]$
+\item \texttt{El} (row 1): $e^0=1,\ e^{0.71}\approx 2.034$ $\to [0.330,\ 0.670,\ 0.000]$
+\item \texttt{perro} (row 2): $e^{0.71}\approx 2.034,\ e^{0.71}\approx 2.034,\ e^{1.41}\approx 4.095$ $\to [0.249,\ 0.249,\ 0.502]$
+\end{itemize}
+
+\noindent\textbf{Attention weights $A_1$:}
+
+\begin{center}
+\begin{tabular}{c|ccc}
+ & \texttt{<SOS>} & \texttt{El} & \texttt{perro} \\
+\texttt{<SOS>} & 1.000 & 0.000 & 0.000 \\
+\texttt{El} & 0.330 & 0.670 & 0.000 \\
+\texttt{perro} & 0.249 & 0.249 & 0.502 \\
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Output $Z_1 = A_1 \cdot V_1$:}
+
+\[
+\texttt{<SOS>}: \quad 1.000 \cdot [1,0] = [1.000,\ 0.000]
+\]
+\[
+\texttt{El}: \quad 0.330 \cdot [1,0] + 0.670 \cdot [0,1] = [0.330,\ 0.670]
+\]
+\[
+\texttt{perro}: \quad 0.249[1,0] + 0.249[0,1] + 0.502[1,1] = [0.751,\ 0.751]
+\]
+
+\medskip
+\noindent\textbf{Head 2 --- attends to dims 2--3}
+
+Projecting to last 2 dimensions gives:
+
+\[
+Q_2 = K_2 = V_2 = \begin{bmatrix}1 & 0\\0 & 1\\0 & 0\end{bmatrix}
+\]
+
+``perro'' maps to $[0, 0]$ because its original dims 2--3 are both 0.
+
+After scaling, masking, and softmax:
+
+\begin{itemize}
+\item \texttt{<SOS>}: $[1.000,\ 0.000,\ 0.000]$
+\item \texttt{El}: $[0.330,\ 0.670,\ 0.000]$
+\item \texttt{perro}: $[0.333,\ 0.333,\ 0.333]$ $\leftarrow$ all three scores are 0 $\to$ uniform over visible tokens
+\end{itemize}
+
+\noindent\textbf{Output $Z_2$:}
+
+\[
+\texttt{<SOS>}: [1.000,\ 0.000]
+\]
+\[
+\texttt{El}: [0.330,\ 0.670]
+\]
+\[
+\texttt{perro}: 0.333[1,0]+0.333[0,1]+0.333[0,0] = [0.333,\ 0.333]
+\]
+
+\medskip
+\noindent\textbf{Concatenate $\to$ Final Output}
+
+Concat $Z_1 \| Z_2$ (each $3\times2 \to 3\times4$), then multiply by $W^O$ (using identity here):
+
+\[
+\texttt{<SOS>}: [1.000,\ 0.000,\ 1.000,\ 0.000]
+\]
+\[
+\texttt{El}: [0.330,\ 0.670,\ 0.330,\ 0.670]
+\]
+\[
+\texttt{perro}: [0.751,\ 0.751,\ 0.333,\ 0.333]
+\]
+
+\medskip
+\noindent\textbf{What the mask actually enforced}
+
+\begin{center}
+\begin{tabular}{c|l|l}
+\textbf{Token} & \textbf{Could attend to} & \textbf{Could NOT attend to} \\
+\texttt{<SOS>} & only itself & El, perro \\
+\texttt{El} & \texttt{<SOS>}, El & perro \\
+\texttt{perro} & \texttt{<SOS>}, El, perro & --- \\
+\end{tabular}
+\end{center}
+
+This output now goes into \textbf{Add \& Norm}, then flows into the \textbf{cross-attention} sub-layer where it will query the encoder output from e6.
+
+\bigskip
+
+\textbf{Where exactly is the masking happening?}
+
+After scaling, before softmax.
+
+You have the scaled score matrix:
+
+\[
+\begin{bmatrix}0.71 & 0.00 & 0.71\\ 0.00 & 0.71 & 0.71\\ 0.71 & 0.71 & 1.41\end{bmatrix}
+\]
+
+You add a mask matrix where future positions are $-\infty$ and current/past positions are $0$:
+
+\[
+M = \begin{bmatrix}0 & -\infty & -\infty\\ 0 & 0 & -\infty\\ 0 & 0 & 0\end{bmatrix}
+\]
+
+Element-wise addition gives:
+
+\[
+\begin{bmatrix}0.71 & -\infty & -\infty\\ 0.00 & 0.71 & -\infty\\ 0.71 & 0.71 & 1.41\end{bmatrix}
+\]
+
+\textbf{Then} softmax is applied. Because $e^{-\infty} = 0$, those positions contribute exactly zero to the weighted sum. They don't just get low attention --- they get \textbf{none}.
+
+So the full operation is:
+
+\[
+\text{Attention} = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M\right)V
+\]
+
+\bigskip
+
+\textbf{For this same sentence let's say d6 (sixth decoder layer) has completed it's computations. Show me with a concrete example of what happens at Linear and Softmax blocks.}
+
+\noindent\textbf{Setup}
+
+\noindent\textbf{d6 output:} one 4-dim vector per token position (3 tokens $\to$ $3\times4$ matrix)
+
+\[
+H = \begin{bmatrix}1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0\end{bmatrix}
+\quad
+\begin{array}{l}\leftarrow \texttt{<SOS>}\\\leftarrow \texttt{El}\\\leftarrow \texttt{perro}\end{array}
+\]
+
+\noindent\textbf{Vocabulary} (size 6): \{\texttt{<SOS>}, \texttt{<EOS>}, \texttt{El}, \texttt{perro}, \texttt{se}, \texttt{sent\'{o}}\}
+
+\medskip
+\noindent\textbf{Linear Layer}
+
+A learned weight matrix $W \in \mathbb{R}^{4 \times 6}$ projects each $d_{\text{model}}$ vector $\to$ one score per vocab word (logits):
+
+\[
+W = \begin{bmatrix}
+0.1 & 0.1 & \mathbf{2.0} & 0.1 & 0.1 & 0.1 \\
+0.1 & 0.1 & 0.1 & \mathbf{2.0} & 0.1 & 0.1 \\
+0.1 & 0.1 & 0.1 & 0.1 & \mathbf{2.0} & 0.1 \\
+0.1 & 0.1 & 0.1 & 0.1 & 0.1 & 0.1
+\end{bmatrix}
+\]
+
+\noindent\textbf{Logits} $= H \cdot W$ ($3\times6$):
+
+\begin{center}
+\small
+\begin{tabular}{c|cccccc}
+ & \texttt{<SOS>} & \texttt{<EOS>} & \texttt{El} & \texttt{perro} & \texttt{se} & \texttt{sent\'{o}} \\
+\texttt{<SOS>} & 0.1 & 0.1 & \textbf{2.0} & 0.1 & 0.1 & 0.1 \\
+\texttt{El}    & 0.1 & 0.1 & 0.1 & \textbf{2.0} & 0.1 & 0.1 \\
+\texttt{perro} & 0.1 & 0.1 & 0.1 & 0.1 & \textbf{2.0} & 0.1 \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Softmax}
+
+Each row is converted independently to a probability distribution. For the \texttt{<SOS>} row:
+
+\[
+e^{0.1} \approx 1.105, \quad e^{2.0} \approx 7.389
+\]
+\[
+\text{sum} = 5 \times 1.105 + 7.389 = 12.914
+\]
+\[
+P(\texttt{El} \mid \texttt{<SOS>}) = \frac{7.389}{12.914} \approx 0.572, \quad \text{all others} \approx 0.086
+\]
+
+Same math applies to all rows:
+
+\begin{center}
+\small
+\begin{tabular}{c|cccccc}
+ & \texttt{<SOS>} & \texttt{<EOS>} & \texttt{El} & \texttt{perro} & \texttt{se} & \texttt{sent\'{o}} \\
+\texttt{<SOS>} & 0.086 & 0.086 & \textbf{0.572} & 0.086 & 0.086 & 0.086 \\
+\texttt{El}    & 0.086 & 0.086 & 0.086 & \textbf{0.572} & 0.086 & 0.086 \\
+\texttt{perro} & 0.086 & 0.086 & 0.086 & 0.086 & \textbf{0.572} & 0.086 \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{What Each Row Means}
+
+Each position is predicting the \textbf{next} token --- this is the critical point:
+
+\begin{center}
+\begin{tabular}{c|c|c}
+\textbf{Position} & \textbf{Predicts} & \textbf{Correct answer} \\
+\texttt{<SOS>} & $\to$ \texttt{El} (0.572) $\checkmark$ & El \\
+\texttt{El}    & $\to$ \texttt{perro} (0.572) $\checkmark$ & perro \\
+\texttt{perro} & $\to$ \texttt{se} (0.572) $\checkmark$ & se \\
+\end{tabular}
+\end{center}
+
+All three predictions happen \textbf{simultaneously} during training (that's why teacher forcing + masking is needed --- you feed the full target at once but prevent each position from peeking ahead).
+
+\medskip
+\noindent\textbf{Loss}
+
+Cross-entropy loss is computed at each position against the true next token, then averaged:
+
+\[
+\mathcal{L} = -\frac{1}{3}\left[\log(0.572) + \log(0.572) + \log(0.572)\right] \approx 0.557
+\]
+
+This loss propagates gradients back through the entire network to update all weights, including $W$.
+
+\bigskip
+
+\textbf{During training a transformer, is the loss calculated after the output has been generated?}
+
+No. During training, the decoder produces probability distributions for \textbf{all positions simultaneously} (as shown in the example --- all 3 rows came out at once). Loss is computed over all those positions at once, not after a complete sentence is generated.
+
+What you're thinking of is \textbf{inference}, where the model actually generates tokens one at a time --- predict one token, feed it back in, predict the next, and so on until \texttt{<EOS>}. That's a sequential process.
+
+During \textbf{training}:
+\begin{itemize}
+\item Full target is fed in at once via teacher forcing
+\item Masking enforces causality (no peeking ahead)
+\item All output distributions are computed in one forward pass
+\item Loss is computed over all positions simultaneously
+\item One backward pass updates all weights
+\end{itemize}
+
+The whole point of teacher forcing + masking is to \textbf{get the efficiency of parallel computation during training}, while still preparing the model for sequential generation at inference time.
+
+\bigskip
+
+\textbf{Does it mean loss is calculated in all decoder layers?}
+
+No. Loss is calculated \textbf{only once} --- after the final decoder layer (d6) passes through the Linear + Softmax block.
+
+Layers d1 through d5 just transform representations and pass them forward. They don't produce vocabulary distributions, so there's nothing to compute loss against.
+
+However, all layers still \textbf{receive gradients} during backpropagation. The loss at the end propagates backward through $d6 \to d5 \to \cdots \to d1$, updating every weight in the network. So the loss is computed once, but its effect reaches everywhere.
+
+\bigskip
+
+\textbf{Don't the encoder layers receive gradients?}
+
+Yes, they do. Gradients flow from the loss all the way back through the decoder, then through the \textbf{cross-attention} sublayer (which connects decoder to encoder), and then back through all encoder layers $e6 \to e1$.
+
+The encoder's output is used as K and V in every decoder layer's cross-attention. Since those values participated in computing the final loss, gradients flow back through them into the encoder weights.
+
+So the full backward path is:
+
+\[
+\mathcal{L} \rightarrow \text{Linear} \rightarrow d6 \rightarrow d5 \rightarrow \cdots \rightarrow d1 \rightarrow \text{cross-attention} \rightarrow e6 \rightarrow e5 \rightarrow \cdots \rightarrow e1
+\]
+
+Everything that participated in the forward pass gets updated. I should have said the whole network, not just the decoder.
+
+\bigskip
+
+\textbf{What is byte pair encoding?}
+
+BPE is a \textbf{tokenization algorithm} --- it solves the problem of how to split text into units before feeding it into the model.
+
+\noindent\textbf{The core problem:} If you tokenize by whole words, your vocabulary is massive and you can't handle unseen words. If you tokenize by characters, sequences become very long and the model has to learn everything from scratch. BPE sits in between.
+
+\noindent\textbf{The algorithm:}
+
+\begin{enumerate}
+\item Start with every word split into individual characters. Add a special end-of-word symbol (e.g.\ \texttt{$\cdot$}).
+\item Count all adjacent character pairs across the entire corpus.
+\item Merge the most frequent pair into a single new symbol.
+\item Repeat for a fixed number of merge operations (the only hyperparameter).
+\end{enumerate}
+
+\noindent\textbf{Concrete example:}
+
+Corpus contains: \texttt{low} ($\times$5), \texttt{lower} ($\times$2), \texttt{newest} ($\times$6), \texttt{widest} ($\times$3)
+
+Initially: \texttt{l o w $\cdot$}, \texttt{n e w e s t $\cdot$}, etc.
+
+\begin{center}
+\begin{tabular}{c|c|c}
+\textbf{Step} & \textbf{Most frequent pair} & \textbf{Merge} \\
+1 & \texttt{e, s} & $\to$ \texttt{es} \\
+2 & \texttt{es, t} & $\to$ \texttt{est} \\
+3 & \texttt{l, o} & $\to$ \texttt{lo} \\
+4 & \texttt{lo, w} & $\to$ \texttt{low} \\
+\end{tabular}
+\end{center}
+
+So \texttt{newest} becomes \texttt{new est $\cdot$} $\to$ eventually \texttt{newest$\cdot$} as a single token, while \texttt{lower} becomes \texttt{low er$\cdot$} --- split into known subword units.
+
+\noindent\textbf{Why it matters for transformers:}
+
+\begin{itemize}
+\item Rare words get broken into meaningful subword pieces instead of being \texttt{<UNK>}
+\item The model can handle words it never saw during training by composing them from known subwords
+\item Vocabulary stays compact and manageable
+\end{itemize}
+
+\bigskip
+
+\textbf{What is the hyper parameter?}
+
+The number of \textbf{merge operations}.
+
+It controls how large your final vocabulary gets. Fewer merges $\to$ more character-level splits, longer sequences. More merges $\to$ larger chunks, shorter sequences, bigger vocabulary. You choose it before training based on your dataset size and language pair.
+
+\bigskip
+
+\textbf{Give me a more concrete example of byte pair encoding from start to end. Mention the hyperparameter chosen for the example.}
+
+\noindent\textbf{Setup}
+
+\noindent\textbf{Corpus:} 4 words with frequencies:
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Frequency} \\
+low & 5 \\
+lower & 2 \\
+newest & 6 \\
+widest & 3 \\
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Hyperparameter:} number of merge operations $= \mathbf{10}$
+
+\medskip
+\noindent\textbf{Step 0 --- Initialize}
+
+Split every word into characters + end-of-word symbol \texttt{</w>}:
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Character sequence} \\
+low    & \texttt{l o w </w>} \\
+lower  & \texttt{l o w e r </w>} \\
+newest & \texttt{n e w e s t </w>} \\
+widest & \texttt{w i d e s t </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 1 --- Count all adjacent pairs}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Pair} & \textbf{Count} \\
+\texttt{e s} & $6+3 = 9$ \\
+\texttt{l o} & $5+2 = 7$ \\
+\texttt{o w} & $5+2 = 7$ \\
+\texttt{e w} & 6 \\
+\texttt{s t} & $6+3 = 9$ \\
+$\ldots$     & $\ldots$ \\
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Most frequent:} \texttt{e s} and \texttt{s t} are tied at 9. Pick \texttt{e s}.
+
+\noindent\textbf{Merge \texttt{e s} $\to$ \texttt{es}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+low    & \texttt{l o w </w>} \\
+lower  & \texttt{l o w e r </w>} \\
+newest & \texttt{n e w es t </w>} \\
+widest & \texttt{w i d es t </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 2 --- Count again}
+
+\noindent\textbf{Most frequent:} \texttt{es t} (appears $6+3 = 9$ times)
+
+\noindent\textbf{Merge \texttt{es t} $\to$ \texttt{est}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+newest & \texttt{n e w est </w>} \\
+widest & \texttt{w i d est </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 3}
+
+\noindent\textbf{Most frequent:} \texttt{l o} ($5+2 = 7$ times)
+
+\noindent\textbf{Merge \texttt{l o} $\to$ \texttt{lo}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+low   & \texttt{lo w </w>} \\
+lower & \texttt{lo w e r </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 4}
+
+\noindent\textbf{Most frequent:} \texttt{lo w} ($5+2 = 7$ times)
+
+\noindent\textbf{Merge \texttt{lo w} $\to$ \texttt{low}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+low   & \texttt{low </w>} \\
+lower & \texttt{low e r </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 5}
+
+\noindent\textbf{Most frequent:} \texttt{n e} (6 times)
+
+\noindent\textbf{Merge \texttt{n e} $\to$ \texttt{ne}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+newest & \texttt{ne w est </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 6}
+
+\noindent\textbf{Most frequent:} \texttt{ne w} (6 times)
+
+\noindent\textbf{Merge \texttt{ne w} $\to$ \texttt{new}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+newest & \texttt{new est </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Step 7}
+
+\noindent\textbf{Most frequent:} \texttt{new est} (6 times)
+
+\noindent\textbf{Merge \texttt{new est} $\to$ \texttt{newest}:}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{Word} & \textbf{Sequence} \\
+newest & \texttt{newest </w>} \\
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent\textbf{Steps 8--10}
+
+Remaining merges handle lower-frequency pairs like \texttt{w i}, \texttt{w id}, \texttt{e r}, etc.\ in \texttt{lower} and \texttt{widest}. After all 10 merges, \texttt{lower} ends up as \texttt{low er </w>} since \texttt{er} never becomes frequent enough to merge with \texttt{low}.
+
+\medskip
+\noindent\textbf{Final Vocabulary}
+
+The learned vocabulary now includes: \texttt{l, o, w, e, r, n, s, t, i, d, </w>, es, est, lo, low, ne, new, newest, wi, wid, \ldots}
+
+\medskip
+\noindent\textbf{At Inference (unseen word)}
+
+Word \texttt{lowest} was never in training. BPE applies the \textbf{learned merge rules in order} to it:
+
+\[
+\texttt{l o w e s t </w>} \to \texttt{lo w e s t </w>} \to \texttt{low e s t </w>} \to \texttt{low es t </w>} \to \texttt{low est </w>}
+\]
+
+So \texttt{lowest} $\to$ \textbf{\texttt{low} + \texttt{est}} --- two known subword units. The model can handle it without ever having seen it.
+
+\bigskip
+
+\textbf{So using byte pair encoding does lowest becomes two word? low and est?}
+
+Yes, exactly. In BPE terminology they are called \textbf{subword units}, not words --- but yes, \texttt{lowest} gets split into two tokens: \texttt{low} and \texttt{est}.
+
+This is actually the key insight of BPE. The model never sees \texttt{lowest} as a whole, but it knows \texttt{low} from ``low'' and ``lower'', and it knows \texttt{est} from ``newest'' and ``widest''. So it can reason about \texttt{lowest} by composing meaning from those two familiar pieces.
+
+\bigskip
+
+\textbf{How the number of merge operation is decided?}
+
+It's a hyperparameter, so it's decided by you before training, typically through \textbf{experimentation}. But there are practical guidelines:
+
+\begin{itemize}
+\item \textbf{Language complexity:} Morphologically rich languages (Turkish, Finnish, Arabic) need more merges because words carry more meaning through suffixes and prefixes. English needs fewer.
+\item \textbf{Vocabulary size target:} More merges $\to$ larger vocabulary, shorter sequences. The original BPE paper used \textbf{32,000--37,000} merge operations for machine translation, which is the most common starting point.
+\item \textbf{Dataset size:} Larger datasets can support more merges because rarer subword units still appear enough times to be meaningful.
+\item \textbf{Sequence length constraints:} More merges mean tokens are larger chunks, so sequences get shorter. If your model has a context length limit, this matters.
+\end{itemize}
+
+In practice, 32,000 is treated as the default for most NLP tasks, and you adjust up or down based on validation performance.
