@@ -550,3 +550,131 @@ $Z_{\mathrm{final}}$ is $(3 \times 2)$ --- same shape as input X. The FFN receiv
 \textbf{What the Two Heads Learned (intuitively)}
 
 Head 1 only saw the first number in each embedding --- ``The'' and ``sat'' both had 1 there, so they attended to each other strongly. Head 2 only saw the second number --- ``cat'' and ``sat'' both had 1, so they attended to each other. Two heads, two different relationships found simultaneously.
+
+\bigskip
+
+\textbf{After calculating scores in MHA, why divide by $d_k$?}
+
+The dot product $q \cdot k = \sum_{i=1}^{d_k} q_i k_i$ is a sum of $d_k$ terms. If each component has mean 0 and variance 1, the dot product has \textbf{mean 0 but variance $d_k$} --- it grows linearly with $d_k$.
+
+At large $d_k$ (e.g., 512), these raw scores become very large. When large values go into softmax, one score dominates and gets weight $\approx 1$ while all others collapse to $\approx 0$. This is \textbf{softmax saturation}.
+
+Saturated softmax has near-zero gradients --- the output barely changes even when inputs change, so the model stops learning effectively.
+
+\textbf{The fix:} divide by $\sqrt{d_k}$, which scales the variance back down:
+
+\[
+\text{Var}\!\left(\frac{q \cdot k}{\sqrt{d_k}}\right) \propto \frac{d_k}{(\sqrt{d_k})^2} = \frac{d_k}{d_k} = 1
+\]
+
+It is the unique scaling that keeps variance constant regardless of $d_k$ --- not too compressed, not too large. That is why the full formula is:
+
+\[
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
+\]
+
+\bigskip
+
+\textbf{Consider this example: our sentence is ``There is a cat''. In MHA, each word will have its own Q, K, V matrix. So, in total there will be 12 Matrices for one head. Right?}
+
+Not quite --- the count of 12 is right but the framing is off.
+
+Each word does not get its own \textbf{matrix}. Each word gets its own \textbf{vectors} --- one $q$, one $k$, one $v$. That is $4\ \text{words} \times 3 = 12$ vectors total per head.
+
+But in practice, those vectors are stacked into \textbf{3 matrices} per head:
+
+\[
+Q = \begin{bmatrix} q_{\text{There}} \\ q_{\text{is}} \\ q_{\text{a}} \\ q_{\text{cat}} \end{bmatrix}, \quad
+K = \begin{bmatrix} k_{\text{There}} \\ k_{\text{is}} \\ k_{\text{a}} \\ k_{\text{cat}} \end{bmatrix}, \quad
+V = \begin{bmatrix} v_{\text{There}} \\ v_{\text{is}} \\ v_{\text{a}} \\ v_{\text{cat}} \end{bmatrix}
+\]
+
+Each is a $4 \times d_k$ matrix. So per head: \textbf{3 matrices}, each holding all 4 words' worth of that role.
+
+These are computed using the shared weight matrices for that head:
+
+\[
+Q = XW^Q, \quad K = XW^K, \quad V = XW^V
+\]
+
+where $X$ is the full input ($4 \times d_{\text{model}}$) and the weight matrices are what is learned. The $Q$, $K$, $V$ matrices are just the result of that projection --- one per role per head, not one per word.
+
+\bigskip
+
+\textbf{Assume $d_{\text{model}} = 4$, head $= 2$. Show me how Q, K, V is calculated for above sentence example.}
+
+\textbf{Setup first:}
+\begin{itemize}
+    \item $d_k = d_{\text{model}} / \text{heads} = 4/2 = 2$
+    \item Each weight matrix: $d_{\text{model}} \times d_k = 4 \times 2$
+    \item Resulting Q, K, V per head: $4 \times 2$ (4 words, each projected to $d_k = 2$)
+\end{itemize}
+
+\textbf{Input matrix $X$} ($4 \times 4$) --- one embedding row per word:
+
+\[
+X = \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ 0 & 0 & 0 & 1 \end{bmatrix}
+\quad
+\begin{array}{l} \text{There} \\ \text{is} \\ \text{a} \\ \text{cat} \end{array}
+\]
+
+(Using one-hot embeddings here to keep the arithmetic clean --- in practice these would be dense learned vectors.)
+
+\textbf{Head 1}
+
+\[
+W^Q_1 = \begin{bmatrix}1&2\\3&4\\5&6\\7&8\end{bmatrix}, \quad
+W^K_1 = \begin{bmatrix}1&0\\0&1\\1&1\\0&0\end{bmatrix}, \quad
+W^V_1 = \begin{bmatrix}2&0\\0&2\\1&1\\3&1\end{bmatrix}
+\]
+
+\[
+Q_1 = XW^Q_1 = \begin{bmatrix}1&2\\3&4\\5&6\\7&8\end{bmatrix}, \quad
+K_1 = XW^K_1 = \begin{bmatrix}1&0\\0&1\\1&1\\0&0\end{bmatrix}, \quad
+V_1 = XW^V_1 = \begin{bmatrix}2&0\\0&2\\1&1\\3&1\end{bmatrix}
+\]
+
+Since $X$ is one-hot, each row of $Q$ simply picks the corresponding row of $W^Q_1$. For example, ``There'' $= [1,0,0,0]$, so its query vector is just row 1 of $W^Q_1 = [1, 2]$.
+
+\textbf{Head 2}
+
+\[
+W^Q_2 = \begin{bmatrix}2&1\\0&3\\1&0\\4&2\end{bmatrix}, \quad
+W^K_2 = \begin{bmatrix}0&1\\2&0\\1&1\\0&2\end{bmatrix}, \quad
+W^V_2 = \begin{bmatrix}1&3\\2&0\\0&1\\1&2\end{bmatrix}
+\]
+
+\[
+Q_2 = \begin{bmatrix}2&1\\0&3\\1&0\\4&2\end{bmatrix}, \quad
+K_2 = \begin{bmatrix}0&1\\2&0\\1&1\\0&2\end{bmatrix}, \quad
+V_2 = \begin{bmatrix}1&3\\2&0\\0&1\\1&2\end{bmatrix}
+\]
+
+\textbf{Summary of what you get:}
+
+\begin{tabular}{lcc}
+ & Head 1 & Head 2 \\[4pt]
+$Q$ & $4 \times 2$ & $4 \times 2$ \\[4pt]
+$K$ & $4 \times 2$ & $4 \times 2$ \\[4pt]
+$V$ & $4 \times 2$ & $4 \times 2$ \\[4pt]
+\end{tabular}
+
+\medskip
+
+Each head gets its \textbf{own independent} $Q$, $K$, $V$ --- computed from the same $X$ but through different learned weight matrices. That is what allows each head to specialize in finding different relationships.
+
+\bigskip
+
+\textbf{Each row of Q, K, V represents a word of the sentence. Correct?}
+
+Yes, correct.
+
+Each row corresponds to one word's projected vector for that role. So for $Q_1$:
+
+\[
+Q_1 = \begin{bmatrix}1&2\\3&4\\5&6\\7&8\end{bmatrix}
+\quad \leftarrow \quad
+\begin{array}{l} \text{There} \\ \text{is} \\ \text{a} \\ \text{cat} \end{array}
+\]
+
+Row 1 = ``There'''s query vector, row 2 = ``is'''s query vector, and so on. Same structure applies to $K$ and $V$.
