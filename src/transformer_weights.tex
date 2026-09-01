@@ -1,0 +1,241 @@
+\bigskip
+
+\textbf{Which weights are shared among multiple components in a transformer and which are not shared? For example, consider below architechture of a transformer: 2 encoders stacked, 2 decoder stacked, 3 head multi head attention.}
+
+\textbf{Weight Sharing in a Transformer (2 enc, 2 dec, 3-head MHA)}
+
+\textbf{Weights that ARE shared}
+
+Only one case of true weight sharing exists in the standard transformer:
+
+\textbf{Embedding matrix $\leftrightarrow$ Output linear projection}
+
+The original paper explicitly states that all three uses --- encoder input embedding, decoder input embedding, and the final pre-softmax linear layer --- share the same single weight matrix $W_E \in \mathbb{R}^{|V| \times d_{\text{model}}}$. This is called \textbf{weight tying}.
+
+\textbf{Weights that are NOT shared}
+
+\begin{tabular}{p{5.5cm} p{8.5cm}}
+Component & Distinct weight sets \\[4pt]
+e1 vs e2 & Completely separate --- self-attention (all heads), FFN, LayerNorm \\
+d1 vs d2 & Completely separate --- masked self-attn, cross-attn, FFN, LayerNorm \\
+Head 1 vs Head 2 vs Head 3 (within any single MHA) & Each head has its own $W_Q^h, W_K^h, W_V^h$ \\
+e1's self-attn vs d1's self-attn vs d1's cross-attn & All separate attention modules, all separate weights \\
+\end{tabular}
+
+The paper is explicit: ``the linear transformations use different parameters from layer to layer.''
+
+\textbf{Critical distinction: shared weights vs.\ shared tensor}
+
+The encoder output from e2 is passed into cross-attention in \textbf{both} d1 and d2 --- but this is a shared \textbf{activation tensor}, not shared weights. Each decoder layer projects that same tensor using its own $W_K^{\text{cross}}$ and $W_V^{\text{cross}}$ matrices. The input is the same; what's done with it differs per layer.
+
+\textbf{Count for your architecture}
+
+In any single 3-head MHA module, you have:
+\begin{itemize}
+  \item $3 \times (W_Q^h, W_K^h, W_V^h)$ = \textbf{9 projection matrices} (one set per head)
+  \item $1 \times W_O$ = \textbf{1 output projection} (shared across all heads in that module)
+\end{itemize}
+
+Multiply that across e1, e2, d1 (masked self-attn + cross-attn), d2 (masked self-attn + cross-attn) --- every one of those is independent. No weight sharing across layers whatsoever except the embedding/output tie.
+
+\bigskip
+
+\textbf{So, weights used for encoder and decoder input embedding are same?}
+
+Yes --- in the original transformer, the encoder input embedding and decoder input embedding use the \textbf{same weight matrix}.
+
+This works because the paper uses a \textbf{shared vocabulary} (via BPE) between the source and target languages. Since both sides map tokens from the same vocabulary to vectors of the same $d_{\text{model}}$, one matrix handles both.
+
+So the single matrix $W_E \in \mathbb{R}^{|V| \times d_{\text{model}}}$ does three jobs:
+\begin{enumerate}
+  \item Embeds encoder input tokens
+  \item Embeds decoder input tokens
+  \item Acts as the output linear projection (transposed)
+\end{enumerate}
+
+\textbf{Important caveat:} This only works when source and target share a vocabulary. If you're translating between two languages with completely separate vocabularies (different scripts, no shared BPE tokens), you'd need separate embedding matrices for encoder and decoder --- and weight tying between decoder input and output would still be possible, but not between encoder and decoder.
+
+\bigskip
+
+\textbf{What is meant by source and target share a vocabulary?}
+
+When you train BPE on the \textbf{combined} text of both languages together, the resulting vocabulary contains subword tokens from both languages in a single unified list.
+
+\textbf{Example:} Suppose you're doing English $\to$ French translation. You run BPE on a corpus of both English and French sentences mixed together. The resulting vocabulary might look like:
+
+\texttt{["the", "un", "ing", "tion", "re", "\#\#ment", "play", "jouer", ...]}
+
+Some tokens are English, some French, some are subword pieces that appear in both (like \texttt{"tion"} which is common in both languages). This is one single vocabulary --- both encoder and decoder index into the same list.
+
+So token ID 47 means the same subword unit whether the encoder is reading it from the English input or the decoder is reading it from the French output.
+
+\textbf{Contrast with separate vocabularies:}
+
+If instead you build BPE separately --- one vocab for English, one for French --- then token ID 47 in the English vocab and token ID 47 in the French vocab are completely unrelated. You can't use the same embedding matrix because the same index points to different things on each side.
+
+The original transformer paper (English$\leftrightarrow$German, English$\leftrightarrow$French) used shared BPE vocabularies of $\sim$37K tokens, which is why weight tying across encoder embedding, decoder embedding, and output projection was possible.
+
+\bigskip
+
+\textbf{The weights used for encoder and decoder input embedding was reused in the linear and softmax layer. Right?}
+
+Yes, exactly right.
+
+The matrix $W_E \in \mathbb{R}^{|V| \times d_{\text{model}}}$ is used in three places:
+\begin{itemize}
+  \item \textbf{Encoder input embedding} --- looks up a row of $W_E$ for each token $\to$ produces a $d_{\text{model}}$ vector
+  \item \textbf{Decoder input embedding} --- same lookup
+  \item \textbf{Output linear layer} --- multiplies the decoder's final $d_{\text{model}}$ vector by $W_E^T$, producing $|V|$ logits, which then go through softmax
+\end{itemize}
+
+The embedding operation and the output linear operation are just transposes of each other. Embedding is $W_E \cdot \text{one-hot}$ (pick a row), the output linear is $W_E^T \cdot \mathbf{h}$ (project back to vocab size). Same weights, opposite direction.
+
+\bigskip
+
+\textbf{In the final calculation of MHE, I saw $W_O$ was multiplied with Z for projection. Is $W_O$ and the weight used in linear softmax layer same?}
+
+No, they are completely different matrices.
+
+\begin{itemize}
+  \item $W_O$ lives \textit{inside} the multi-head attention module. It takes the concatenated head outputs and projects them back to $d_{\text{model}}$. Shape: $\mathbb{R}^{h \cdot d_v \times d_{\text{model}}}$. Its job is to blend and resize the heads' combined output.
+  \item \textbf{Output linear layer} ($W_E^T$) comes at the very end of the entire decoder stack, after all layers are done. It projects the final $d_{\text{model}}$ vector to $|V|$ logits. Shape: $\mathbb{R}^{d_{\text{model}} \times |V|}$.
+\end{itemize}
+
+Different shapes, different positions in the network, completely different purposes. $W_O$ is internal to attention; $W_E^T$ is the final vocabulary projection. They are never shared.
+
+\bigskip
+
+\textbf{For each attention head there are 3 weight matrices. Right?}
+
+Yes. Each head $h$ has its own three projection matrices:
+\begin{itemize}
+  \item $W_Q^h \in \mathbb{R}^{d_{\text{model}} \times d_k}$
+  \item $W_K^h \in \mathbb{R}^{d_{\text{model}} \times d_k}$
+  \item $W_V^h \in \mathbb{R}^{d_{\text{model}} \times d_v}$
+\end{itemize}
+
+So for your 3-head MHA, that's \textbf{9 projection matrices} per attention module, plus one shared $W_O$ for that module.
+
+\bigskip
+
+\textbf{$W_O$ is shared among all heads?}
+
+Not exactly --- ``shared among heads'' is a slight mischaracterization.
+
+$W_O$ doesn't operate on each head individually. The heads all finish their computations, their outputs get \textbf{concatenated} into one long vector, and then $W_O$ is applied \textbf{once} to that concatenated result.
+
+So $W_O$ is a single matrix per attention module, but no individual head ever touches it. It only sees the combined output after all heads are done.
+
+The flow is:
+\[
+\text{Concat}(\text{head}_1, \text{head}_2, \text{head}_3) \xrightarrow{W_O} \text{MHA output}
+\]
+
+Each head has its own $W_Q^h, W_K^h, W_V^h$. Then there is one $W_O$ per attention module applied after concatenation.
+
+\bigskip
+
+\textbf{In encoder we have two add and norm layers. Do these layers share same weights?}
+
+No, they have separate weights.
+
+The \textbf{Add} step has no learnable weights --- it's just a residual addition.
+
+The \textbf{Norm} step (Layer Normalization) has two learnable parameters: a scale $\gamma$ and a shift $\beta$, both of shape $d_{\text{model}}$.
+
+Within a single encoder layer, the two LayerNorm instances --- one after self-attention, one after FFN --- each have their \textbf{own independent} $\gamma$ and $\beta$. They are not shared.
+
+And naturally, e1 and e2 also each have their own separate LayerNorm parameters. So in your 2-encoder architecture, you have \textbf{4 sets} of $(\gamma, \beta)$ just for the encoder LayerNorms.
+
+\bigskip
+
+\textbf{Then in a single decoder we have 3 sets of gamma and beta. Right?}
+
+Yes, exactly right.
+
+Each decoder layer has three sublayers --- masked self-attention, cross-attention, FFN --- each followed by its own Add \& Norm. So one decoder layer has \textbf{3 independent sets} of $(\gamma, \beta)$.
+
+In your 2-decoder architecture, that's \textbf{6 sets} of $(\gamma, \beta)$ just for the decoder LayerNorms.
+
+\bigskip
+
+\textbf{The feedforward network inside encoder and decoder, does it have its own weights?}
+
+Yes, each FFN has its own independent weights.
+
+Each FFN consists of two linear transformations:
+\[
+\text{FFN}(x) = \max(0,\ xW_1 + b_1)W_2 + b_2
+\]
+
+So each FFN has 4 learnable components: $W_1, b_1, W_2, b_2$.
+
+Every encoder and decoder layer has its own independent copy of these. The original paper is explicit: ``the linear transformations use different parameters from layer to layer.''
+
+In your architecture (2 encoders + 2 decoders), you have \textbf{4 completely independent FFNs}, each with their own $W_1, b_1, W_2, b_2$.
+
+\bigskip
+
+\textbf{In decoder there are two MHA, masked and unmasked. Do they share weights?}
+
+No, they have completely separate weights.
+
+The masked self-attention and the cross-attention are two independent MHA modules, each with their own full set of weights:
+\begin{itemize}
+  \item 3 heads $\times$ $(W_Q^h, W_K^h, W_V^h)$ --- separate for each module
+  \item $W_O$ --- separate for each module
+\end{itemize}
+
+So within a single decoder layer, you have \textbf{2 completely independent sets} of all attention weights. And across d1 and d2, none of these are shared either.
+
+\bigskip
+
+\textbf{Consider following transformer architechture: 1 encoder, 1 decoder, 1 head. Now give me the list of weights that are used in this architecture.}
+
+\textbf{Shared (weight tying)}
+
+$W_E \in \mathbb{R}^{|V| \times d_{\text{model}}}$ --- encoder input embedding, decoder input embedding, and output linear projection
+
+\medskip
+
+\textbf{Encoder}
+
+Self-attention:
+\begin{itemize}
+  \item $W_Q, W_K, W_V \in \mathbb{R}^{d_{\text{model}} \times d_k}$
+  \item $W_O \in \mathbb{R}^{d_v \times d_{\text{model}}}$
+\end{itemize}
+
+LayerNorm 1: $\gamma_1, \beta_1$
+
+FFN: $W_1, b_1, W_2, b_2$
+
+LayerNorm 2: $\gamma_2, \beta_2$
+
+\medskip
+
+\textbf{Decoder}
+
+Masked self-attention:
+\begin{itemize}
+  \item $W_Q, W_K, W_V \in \mathbb{R}^{d_{\text{model}} \times d_k}$
+  \item $W_O \in \mathbb{R}^{d_v \times d_{\text{model}}}$
+\end{itemize}
+
+LayerNorm 1: $\gamma_1, \beta_1$
+
+Cross-attention:
+\begin{itemize}
+  \item $W_Q, W_K, W_V \in \mathbb{R}^{d_{\text{model}} \times d_k}$
+  \item $W_O \in \mathbb{R}^{d_v \times d_{\text{model}}}$
+\end{itemize}
+
+LayerNorm 2: $\gamma_2, \beta_2$
+
+FFN: $W_1, b_1, W_2, b_2$
+
+LayerNorm 3: $\gamma_3, \beta_3$
+
+\medskip
+
+Positional encodings are fixed (sinusoidal) in the original paper --- not learnable weights.
