@@ -1,0 +1,85 @@
+\section{LLM}
+
+\textbf{Page 3 - 7 of lecture \texttt{5\_LLMs.pdf}}
+
+\medskip
+
+\textbf{Page 3 --- Decoder-only Generative Models}
+
+The slide establishes the architectural foundation of modern LLMs. You already know the full transformer has an encoder and a decoder. Decoder-only models \textbf{discard the encoder entirely} --- they only keep the decoder stack, removing the cross-attention sublayer (since there is no encoder output to attend to). What remains is: masked self-attention $\rightarrow$ feed-forward, repeated $N$ times.
+
+The key claim is that this stripped-down architecture is sufficient for \textbf{causal language modeling} --- predicting the next token given all previous tokens. That task, trained at massive scale, turns out to be sufficient to produce human-like generation and emerge surprising capabilities beyond simple next-word prediction.
+
+GPT is the canonical example. The ``paper (4.2.3 and 4.2.4)'' reference points to sections of the original ``Attention Is All You Need'' paper, which described the decoder design that GPT is directly built on.
+
+\medskip
+
+\textbf{Page 4 --- Pretraining: The Training Objective}
+
+This slide lays out exactly how a decoder-only model is trained. The example makes it concrete:
+
+\textbf{Input:} ``The capital of Bangladesh is'' $\rightarrow$ \textbf{Target:} ``Dhaka''
+
+Four concepts are defined:
+
+\textbf{Language Modeling} --- the goal is to maximize $P(\text{next token} \mid \text{previous tokens})$. The model outputs a probability distribution over the entire vocabulary at each position.
+
+\textbf{Cross-entropy loss} --- the predicted distribution is compared to a one-hot vector (all probability mass on the true next token). The loss penalizes how much probability was assigned elsewhere. The lower the probability assigned to the correct token, the higher the loss.
+
+\textbf{Teacher forcing} --- during training, even after the model makes a prediction, the \textit{ground truth} token is fed as the next input, not the model's own prediction. This prevents error accumulation during training and enables parallelism --- the entire sequence can be processed in one forward pass. You have seen this before; the slide is confirming it applies directly to GPT-style pretraining.
+
+\textbf{Autoregressive generation} --- at inference only, there is no ground truth to feed. So the model's own predicted token becomes the next input. This is sequential and cannot be parallelized.
+
+The asymmetry --- parallel during training, sequential during inference --- is the defining operational split.
+
+\medskip
+
+\textbf{Page 5 --- Pretraining: Tokenization}
+
+The slide maps which tokenization algorithm each major model uses:
+
+\textbf{BPE / Byte-level BPE} --- used by GPT-2, GPT-3, RoBERTa. You covered BPE before midterm. Byte-level BPE operates on raw bytes instead of Unicode characters, so it handles any language and avoids the unknown-token problem entirely --- every possible byte sequence is representable.
+
+\textbf{WordPiece} --- used by BERT. Conceptually similar to BPE (iterative merging of subword units) but uses a different merge criterion: instead of selecting the most frequent pair, it selects the pair that maximizes the likelihood of the training data under a language model. In practice they produce similar vocabularies.
+
+\textbf{SentencePiece} --- used by T5 and Llama. A language-agnostic framework that can implement either BPE or unigram language model tokenization. Its key difference: it treats the raw text (including whitespace) as-is, without language-specific pre-tokenization rules, making it portable across languages.
+
+The practical takeaway: the tokenizer choice determines vocabulary structure, out-of-vocabulary behavior, and sequence length --- all of which affect model performance. Different models made different tradeoffs here.
+
+\medskip
+
+\textbf{Page 6 --- Pretraining: Training Data Sources}
+
+Where does the training text actually come from? Five categories:
+
+\textbf{Common Crawl} --- a nonprofit that continuously crawls the web and makes the data publicly available. Petabyte-scale. Extremely noisy --- much of it is low-quality, duplicate, or toxic content, so heavy filtering is always applied before use.
+
+\textbf{Books} --- Project Gutenberg (public domain works) and less legitimate sources. Books provide long-form, coherent, high-quality prose --- useful for learning to reason across long contexts.
+
+\textbf{Wikipedia} --- clean, factual, and well-structured. Small in volume relative to web crawls but very high signal.
+
+\textbf{Academic papers} --- ArXiv (preprints in math, physics, CS, ML) and PubMed (biomedical literature). Adds technical and scientific reasoning capability.
+
+\textbf{Code} --- GitHub repositories. Critical for code generation tasks, but also known to improve general reasoning ability.
+
+The slide then makes two higher-level points:
+
+\textbf{Data quality $>$ data quantity} --- this is not obvious but empirically well-established. Training on a smaller, cleaner corpus often outperforms training on a much larger dirty one. Filtering, deduplication, and quality scoring are where a lot of the real engineering effort goes.
+
+\textbf{Possible issues --- diversity, quality, contamination} --- diversity means the corpus should cover many domains, languages, and writing styles; gaps here create capability gaps. Quality refers to noise and toxicity. \textit{Contamination} is a specific and serious problem: if benchmark test sets (e.g., from standard NLP evaluation tasks) accidentally appear in the training data, the model effectively ``memorizes'' the answers, making benchmark scores unreliable measures of generalization.
+
+\medskip
+
+\textbf{Page 7 --- Pretraining: Scaling Laws}
+
+This slide covers one of the most consequential empirical findings in LLM development, from \textbf{Hoffmann et al.\ 2022} (the Chinchilla paper --- which is in your project files).
+
+\textbf{The prior belief (pre-Chinchilla):} Following Kaplan et al.\ (2020), the field believed that when given more compute, you should primarily invest it in making the model \textit{larger}. Training tokens were treated as a secondary concern.
+
+\textbf{The problem the slide identifies:} Most models were \textit{compute-inefficient} --- they were too large relative to how much data they were trained on. A model with more parameters than its training data can justify is \textit{overparameterized}: it has the capacity to learn more, but there is no signal left to learn from.
+
+\textbf{Chinchilla's insight:} Model size and training tokens should scale \textit{equally}. If you double the model size, you should also double the number of training tokens. The prior recommendation (Kaplan et al.) dramatically underweighted training data.
+
+\textbf{The practical demonstration:} Chinchilla has 70 billion parameters --- about $4\times$ smaller than Gopher (280B parameters), which was DeepMind's prior model. By training Chinchilla on significantly more tokens while using the same compute budget, it outperformed Gopher on most benchmarks despite being much smaller.
+
+The implication: \textbf{a smaller model trained on more data beats a larger model trained on less data, at the same compute cost.} This reframed how the field thinks about resource allocation during pretraining.

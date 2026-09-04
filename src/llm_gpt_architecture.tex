@@ -1,0 +1,250 @@
+\bigskip
+
+\textbf{Explain GPT architecture (page 8 of \texttt{5\_LLMs.pdf})}
+
+The slide shows the full transformer on the left for reference, and the \textbf{GPT architecture on the right}. Here is what is happening:
+
+\medskip
+\noindent\textbf{GPT is Decoder-Only}
+
+GPT takes only the \textbf{decoder stack} from the original transformer and discards the encoder entirely. Since there is no encoder, it also eliminates cross-attention. What remains per block:
+
+\medskip
+\noindent Masked Multi-Head Self-Attention $\to$ residual add $\to$ Layer Norm $\to$ Feed Forward $\to$ residual add $\to$ Layer Norm
+
+\medskip
+\noindent This block repeats \textbf{12$\times$} (in GPT-1). Each token can attend only to itself and tokens before it --- never future tokens --- enforced by the causal mask.
+
+\medskip
+\noindent\textbf{Bottom-Up Walkthrough}
+
+\noindent\textbf{Text \& Position Embed} --- input tokens are embedded into vectors, then positional information is added (same as the standard transformer).
+
+\noindent\textbf{Masked Multi Self-Attention} --- the core of each block. Self-attention here means $Q, K, V$ all come from the same sequence, not from a separate encoder output. The mask sets future positions to $-\infty$ before softmax, so they contribute zero weight --- the model genuinely cannot see what comes next.
+
+\noindent\textbf{Residual Add + Layer Norm ($\times$2 per block)} --- applied after attention and again after the feed-forward. This is Post-LN ordering (same as the original paper): sublayer first, then add, then normalize.
+
+\noindent\textbf{Feed Forward} --- position-wise MLP applied identically to each token's representation. Expands dimensionality, applies nonlinearity, projects back.
+
+\medskip
+\noindent\textbf{Two Output Heads at the Top}
+
+The slide shows two heads branching off the final layer:
+
+\begin{itemize}
+  \item \textbf{Text Prediction} --- the standard language model head. Projects the hidden state through a linear layer + softmax to predict the next token. This is the pretraining objective.
+  \item \textbf{Task Classifier} --- added during fine-tuning for downstream classification tasks (sentiment, entailment, etc.). Takes the representation of a special delimiter token and classifies it.
+\end{itemize}
+
+During pretraining, only the text prediction head is active. During fine-tuning, the task classifier is added on top and the whole network is updated end-to-end.
+
+\medskip
+\noindent\textbf{Why Discard the Encoder?}
+
+GPT's goal is \textbf{language modeling} --- predict the next token given all previous tokens. That is inherently a left-to-right, single-sequence task. You do not need a separate encoder producing a compressed source representation (that is only needed for seq2seq tasks like translation). The decoder stack alone, with causal masking, is exactly sufficient.
+
+\bigskip
+
+\textbf{What is position-wise MLP in Feed Forward?}
+
+``Position-wise'' means the \textbf{same MLP is applied independently to each token's vector}, one position at a time, with no interaction between positions.
+
+If your sequence has tokens $[x_1, x_2, \ldots, x_T]$, each $x_t \in \mathbb{R}^{d_{\mathrm{model}}}$, the feed-forward sub-layer does:
+
+\[
+\mathrm{FFN}(x_t) = \max(0,\ x_t W_1 + b_1)\ W_2 + b_2
+\]
+
+\begin{itemize}
+  \item $W_1 \in \mathbb{R}^{d_{\mathrm{model}} \times d_{ff}}$ --- expands to a larger hidden dimension (typically $d_{ff} = 4 \times d_{\mathrm{model}}$)
+  \item ReLU (or GELU in GPT) applies the nonlinearity
+  \item $W_2 \in \mathbb{R}^{d_{ff} \times d_{\mathrm{model}}}$ --- projects back down
+\end{itemize}
+
+The key point: $W_1$ and $W_2$ are \textbf{shared across all positions} --- every token goes through the exact same weight matrices --- but each token is processed \textbf{independently} with no information flow between positions at this stage. Token $x_3$ has no idea what $x_1$ or $x_2$ look like when it is being processed by the FFN.
+
+\medskip
+\noindent\textbf{Why is this useful if tokens do not interact?}
+
+Token interaction already happened in the attention sub-layer. By the time a token's vector reaches the FFN, it has already absorbed context from other tokens via attention weights. The FFN's job is to \textbf{transform that individual representation} --- apply learned nonlinear functions to refine it --- not to mix information across positions again. Think of attention as the ``communication'' step and the FFN as the ``computation'' step.
+
+\bigskip
+
+\textbf{What happens inside linear layer in text prediction once hidden state is passed to linear layer?}
+
+The linear layer projects the final hidden state $h \in \mathbb{R}^{d_{\mathrm{model}}}$ to a vector of \textbf{logits} $\in \mathbb{R}^{|V|}$, one score per vocabulary token:
+
+\[
+\mathrm{logits} = h W_E^T + b
+\]
+
+where $W_E^T \in \mathbb{R}^{d_{\mathrm{model}} \times |V|}$ --- this is the \textbf{transposed embedding matrix} (weight tying, same as the standard transformer). Each logit is a raw, unnormalized score representing how likely that vocabulary token is to come next.
+
+Softmax then converts these logits to a probability distribution:
+
+\[
+P(\text{next token} = v) = \frac{e^{\mathrm{logit}_v}}{\sum_{v'} e^{\mathrm{logit}_{v'}}}
+\]
+
+The token with the highest probability is the model's prediction for the next position.
+
+\medskip
+\noindent\textbf{Concretely:} if $d_{\mathrm{model}} = 768$ and $|V| = 50{,}257$ (GPT-2), then the linear layer is a $768 \times 50{,}257$ matrix multiplication --- every hidden dimension contributes to scoring every word in the vocabulary simultaneously.
+
+\bigskip
+
+\textbf{A concrete example of above projection in linear layer.}
+
+\noindent\textbf{Setup:} $d_{\mathrm{model}} = 4$, vocabulary of 5 tokens.
+
+\medskip
+\noindent\textbf{Hidden state} from the final decoder layer:
+
+\[
+h = [0.5,\ {-0.2},\ 0.8,\ 0.1]
+\]
+
+\noindent\textbf{Embedding matrix} $W_E$ (5 tokens $\times$ 4 dims) --- each row is a token's learned embedding:
+
+\medskip
+\begin{tabular}{|l|r|r|r|r|}
+\hline
+Token & dim1 & dim2 & dim3 & dim4 \\
+\hline
+cat & 1.0  & 0.0  & 0.5  & 0.2  \\
+dog & 0.0  & 1.0  & 0.3  & $-0.1$ \\
+sat & 0.5  & $-0.5$ & 1.0  & 0.0  \\
+mat & 0.2  & 0.1  & 0.8  & 0.3  \\
+the & $-0.3$ & 0.2  & 0.1  & 0.5  \\
+\hline
+\end{tabular}
+
+\medskip
+\noindent\textbf{Projection:} $\mathrm{logit}_v = h \cdot W_E[v]$ --- dot product of $h$ with each row:
+
+\begin{align*}
+\mathrm{logit}_{\mathrm{cat}} &= (0.5)(1.0) + (-0.2)(0.0) + (0.8)(0.5) + (0.1)(0.2) = 0.92 \\
+\mathrm{logit}_{\mathrm{dog}} &= (0.5)(0.0) + (-0.2)(1.0) + (0.8)(0.3) + (0.1)(-0.1) = 0.03 \\
+\mathrm{logit}_{\mathrm{sat}} &= (0.5)(0.5) + (-0.2)(-0.5) + (0.8)(1.0) + (0.1)(0.0) = 1.15 \\
+\mathrm{logit}_{\mathrm{mat}} &= (0.5)(0.2) + (-0.2)(0.1) + (0.8)(0.8) + (0.1)(0.3) = 0.75 \\
+\mathrm{logit}_{\mathrm{the}} &= (0.5)(-0.3) + (-0.2)(0.2) + (0.8)(0.1) + (0.1)(0.5) = -0.06
+\end{align*}
+
+\noindent Logits: $[0.92,\ 0.03,\ 1.15,\ 0.75,\ -0.06]$
+
+\medskip
+\noindent\textbf{Softmax} converts to probabilities (sum of $e^{\mathrm{logit}} = 9.756$):
+
+\medskip
+\begin{tabular}{|l|r|r|}
+\hline
+Token & Logit & Probability \\
+\hline
+cat          & 0.92  & 0.257 \\
+dog          & 0.03  & 0.106 \\
+\textbf{sat} & \textbf{1.15} & \textbf{0.324} \\
+mat          & 0.75  & 0.217 \\
+the          & $-0.06$ & 0.097 \\
+\hline
+\end{tabular}
+
+\medskip
+\noindent\textbf{``sat''} wins --- the model predicts it as the next token.
+
+\medskip
+\noindent\textbf{Intuition behind the dot product:} a high logit for a token means $h$ is geometrically close (in direction) to that token's embedding row. The hidden state $h$ encodes ``what should come next'' and the dot product measures how well each vocabulary embedding matches that signal.
+
+\bigskip
+
+\textbf{Comprehensive explanation of page 9--13 of \texttt{5\_LLMs.pdf}. Go through all project files thoroughly to gather context.}
+
+\medskip
+\noindent\textbf{Page 9 --- GPT-1: Fine-tuning on Downstream Tasks}
+
+GPT-1 is pretrained as a language model (predict next token), but the goal is to make it useful on \textbf{labeled downstream tasks} without training a separate model for each. The strategy: format every task's input as a flat token sequence that GPT can consume, add a lightweight task-specific linear head on top, then fine-tune the whole network end-to-end.
+
+Four tasks are shown, each using three special tokens --- \textbf{[Start]}, \textbf{[Delim]} (delimiter), \textbf{[Extract]} --- to structure the input:
+
+\noindent\textbf{Classification} --- single input, single label (e.g., sentiment):
+
+\medskip
+\noindent [Start] $\to$ Text $\to$ [Extract] $\to$ Transformer $\to$ Linear
+
+\medskip
+\noindent The [Extract] token's final hidden state is passed to the linear classifier.
+
+\noindent\textbf{Entailment} --- does a hypothesis follow from a premise?
+
+\medskip
+\noindent [Start] $\to$ Premise $\to$ [Delim] $\to$ Hypothesis $\to$ [Extract] $\to$ Transformer $\to$ Linear
+
+\medskip
+\noindent The delimiter tells the model where one text ends and the other begins. The model must learn the relationship between them.
+
+\noindent\textbf{Similarity} --- is Text A similar to Text B? Order should not matter, so both orderings are fed separately through the same transformer, their outputs are \textbf{added} (+), then passed to a linear layer. This makes the representation symmetric.
+
+\noindent\textbf{Multiple Choice} --- one context paired with $N$ answer candidates:
+[Start] $\to$ Context $\to$ [Delim] $\to$ Answer$_i$ $\to$ [Extract] --- one sequence per answer, each producing its own linear score. A softmax over all $N$ scores selects the answer.
+
+The key architectural insight: \textbf{the transformer weights are shared across all tasks}. Only the linear head on top is task-specific. This is what made GPT-1's approach broadly applicable --- you pretrain once on language modeling, then fine-tune cheaply.
+
+\medskip
+\noindent\textbf{Page 10 --- GPT-2: Scale Without Fine-tuning}
+
+GPT-2 is architecturally identical to GPT-1 but scaled by roughly 10$\times$ in both parameters (120M $\to$ 1.5B) and training data.
+
+The training data is \textbf{WebText}: pages scraped from URLs that appeared in Reddit posts with at least 3 karma upvotes. The 3-karma filter acts as a proxy for human quality judgment --- links people found worthwhile. This produced 45 million links, 40 GB of text.
+
+The central claim of GPT-2 is that \textbf{fine-tuning is unnecessary} if the model is large and diverse enough. A sufficiently capable language model implicitly learns to do many tasks just from the distribution of text on the internet --- news articles implicitly teach summarization, Q\&A forums teach question answering, and so on. GPT-2 demonstrated this with zero-shot performance, though not yet at a level that outperformed fine-tuned task-specific models.
+
+GPT-2 was also the \textbf{last GPT model released publicly in full} --- OpenAI's stance on public release changed from GPT-3 onward.
+
+\medskip
+\noindent\textbf{Page 11 --- GPT-3: Scale as the Paradigm Shift}
+
+GPT-3 pushes GPT-2's architecture to 175 billion parameters --- another 100$\times$ scale-up --- and trains on 300 billion tokens drawn from CommonCrawl, WebText, English Wikipedia, and two books corpora (570 GB of plaintext total). The scale makes it accessible only via API, not as downloadable weights.
+
+Three key contributions:
+
+\noindent\textbf{In-context learning} --- GPT-3 can solve tasks from just a few examples placed in the prompt (few-shot), one example (one-shot), or none (zero-shot), without any gradient updates. The examples in the prompt act as implicit task specifications. This works because a large enough language model learns to recognize and continue patterns, including the pattern ``input $\to$ output'' that task examples establish.
+
+\noindent\textbf{GPT-3.5 / ChatGPT} --- The slide notes that GPT-3.5 made the current LLM boom possible. GPT-3.5 is a fine-tuned version of GPT-3 using \textbf{RLHF} (Reinforcement Learning from Human Feedback), formalized in the InstructGPT paper. RLHF trains a reward model on human preference data, then uses RL (specifically PPO) to further tune the language model to maximize that reward. The result is a model that follows instructions rather than just completing text --- this is what became ChatGPT.
+
+\noindent\textbf{The cost} --- 355 GPU-years and an estimated \$4.6M to train once. This is directly relevant to the Chinchilla paper (\texttt{training\_llm\_paper.pdf}): the Chinchilla authors argue GPT-3 is \textit{undertrained} given its parameter count --- they show that for a given compute budget, you should train a smaller model on more tokens rather than a larger model on fewer tokens. A compute-optimal GPT-3-scale training run would use far fewer parameters and far more tokens.
+
+\medskip
+\noindent\textbf{Page 12 --- GPT-4 and Beyond}
+
+GPT-4 introduces three major shifts relative to GPT-3:
+
+\noindent\textbf{Multimodality} --- GPT-4 accepts image inputs in addition to text, meaning the input embedding layer is extended to handle visual tokens (typically through a separate vision encoder whose outputs are projected into the same space as text embeddings).
+
+\noindent\textbf{Instruction-tuning + RLHF} --- Both human feedback (RLHF) and AI feedback (RLAIF --- using another model to generate preference labels) are used to align the model. This is what ``reinforcement learning from human and AI capabilities'' means on the slide.
+
+\noindent\textbf{Larger context window} --- Up to 32k tokens (vs GPT-3's 4k). This requires either extrapolating positional encodings beyond training length or switching to positional encoding schemes like RoPE (Rotary Position Embedding) or ALiBi that generalize better to longer sequences than the original sinusoidal encodings.
+
+\medskip
+\noindent\textbf{Page 13 --- LLaMA Model Family}
+
+LLaMA is Meta AI's answer to the closed-model problem. It is \textbf{decoder-only} like GPT, but released with weights publicly available, making it the backbone of most open-source LLM work.
+
+The table compares LLaMA 1 and LLaMA 2 across several axes:
+
+\medskip
+\begin{tabular}{|l|l|l|}
+\hline
+ & LLaMA 1 & LLaMA 2 \\
+\hline
+Sizes & 7B, 13B, 33B, 65B & 7B, 13B, 34B, 70B \\
+Context length & 2k & 4k \\
+Training tokens & 1.0T--1.4T & 2.0T \\
+GQA & $\times$ all sizes & \begin{tabular}[t]{@{}l@{}}$\times$ for 7B, 13B \\ $\checkmark$ for 34B, 70B\end{tabular} \\
+\hline
+\end{tabular}
+
+\medskip
+\noindent\textbf{GQA --- Grouped Query Attention} is the most technically interesting entry. Standard multi-head attention has $h$ separate $Q, K, V$ heads --- all distinct. GQA sits between that and Multi-Query Attention (MQA): it groups the $h$ query heads into $g$ groups, with each group sharing one $K$ head and one $V$ head. For example, with 32 query heads and 8 groups, you have 32 $Q$ projections but only 8 $K$ and 8 $V$ projections.
+
+Why does this matter? The $K$ and $V$ matrices are what gets cached during autoregressive generation (the \textbf{KV cache}). At inference time, every new token needs the keys and values of all previous tokens in context. With a 70B model and a long sequence, this cache becomes enormous. GQA reduces $K$ and $V$ memory by a factor of $h/g$, dramatically reducing memory bandwidth and enabling longer contexts at scale. LLaMA 2 only enables GQA for the 34B and 70B models where this pressure is most acute.
+
+The training data for LLaMA 2 (2.0T tokens from publicly available sources) also reflects Chinchilla-optimal thinking --- more tokens per parameter than GPT-3 used, consistent with the finding that the field had been systematically undertraining large models.
