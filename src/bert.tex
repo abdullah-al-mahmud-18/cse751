@@ -1,0 +1,241 @@
+\section{BERT}
+
+\textbf{The encoder architecture used in BERT, is it the same architecture used for the transformer?}
+
+Yes, structurally --- BERT reuses the exact Transformer \textbf{encoder} block: multi-head self-attention $\to$ add \& norm $\to$ feedforward $\to$ add \& norm, stacked N times. Same scaled dot-product attention, same residual connections.
+
+A few differences worth noting:
+
+\begin{enumerate}
+\item \textbf{Positional encoding}: original Transformer uses fixed sinusoidal encodings; BERT uses \textbf{learned} positional embeddings.
+\item \textbf{Segment embeddings}: BERT adds a third embedding (sentence A/B) summed with token + position embeddings --- the original Transformer has no such thing since it's single-sequence-per-side.
+\item \textbf{Activation}: original Transformer's FFN uses ReLU; BERT uses \textbf{GELU}.
+\item \textbf{No decoder}: the original Transformer pairs its encoder with a decoder (for seq2seq translation) that also has cross-attention. BERT drops the decoder entirely and only uses stacked encoders, since it's not generating sequences autoregressively.
+\end{enumerate}
+
+So the core computational block is identical, but the surrounding embedding scheme and the overall architecture (encoder-only vs encoder-decoder) differ.
+
+\textbf{Explain the third embedding (sentence A/B) summed with token + position embeddings.}
+
+BERT input representation is the elementwise sum of three embeddings, all of the same dimension (768 for BERT-base), so they can be added directly:
+
+\textbf{Token embedding} --- standard vocabulary embedding lookup.
+
+\textbf{Position embedding} --- learned vector per position index (0, 1, 2, ...).
+
+\textbf{Segment embedding} --- indicates which of the two sentences a token belongs to.
+
+For tasks like NSP or QA, BERT's input is packed as two sentences:
+
+\begin{verbatim}
+[CLS] tok1 tok2 [SEP] tok3 tok4 tok5 [SEP]
+  A    A    A    A     B    B    B    B
+\end{verbatim}
+
+There are only \textbf{two possible segment vectors}, call them $E_A$ and $E_B$, each a learned vector of size 768. Every token in sentence A gets $E_A$ added to it; every token in sentence B (plus its \texttt{[SEP]}) gets $E_B$. The \texttt{[CLS]} token is also assigned segment A.
+
+So for a token at position $i$ in sentence A:
+
+\[
+\text{input}_i = E_{\text{token}}(w_i) + E_{\text{pos}}(i) + E_A
+\]
+
+For single-sentence tasks (e.g. plain classification, no sentence pair), every token just gets $E_A$ --- segment embeddings are still present but degenerate to a constant.
+
+\textbf{Why it's needed}: self-attention has no inherent notion of sentence boundaries beyond the \texttt{[SEP]} token itself. The segment embedding gives every token an explicit, learned signal of "which side" it's on, which matters directly for NSP (predicting if B follows A) and later for tasks like question-answering (segment A = question, segment B = passage).
+
+\textbf{A concrete toy example of all three embeddings.}
+
+Toy setup: sequence \texttt{[CLS] the cat [SEP] sat down [SEP]}, with $d_{model}=4$.
+
+\textbf{Assignments:}
+
+\begin{tabular}{lll}
+Token & Position & Segment \\
+{[CLS]} & 0 & A \\
+the & 1 & A \\
+cat & 2 & A \\
+{[SEP]} & 3 & A \\
+sat & 4 & B \\
+down & 5 & B \\
+{[SEP]} & 6 & B \\
+\end{tabular}
+
+\textbf{Made-up (toy) embedding vectors:}
+
+Token embeddings:
+\begin{itemize}
+\item $E_{tok}(cat) = [0.2, 0.9, 0.1, 0.0]$
+\item $E_{tok}(sat) = [0.3, 0.2, 0.4, 0.1]$
+\item $E_{tok}([SEP]) = [0.0, 0.0, 0.5, 0.5]$ --- same vector both times it appears
+\end{itemize}
+
+Position embeddings:
+\begin{itemize}
+\item $E_{pos}(2) = [0.0, 0.2, 0.0, 0.1]$
+\item $E_{pos}(3) = [0.2, 0.0, 0.0, 0.2]$
+\item $E_{pos}(4) = [0.0, 0.1, 0.2, 0.0]$
+\item $E_{pos}(6) = [0.0, 0.2, 0.0, 0.0]$
+\end{itemize}
+
+Segment embeddings (only two exist, shared across all tokens in that segment):
+\begin{itemize}
+\item $E_A = [0.05, 0.05, 0.05, 0.05]$
+\item $E_B = [0.15, 0.15, 0.15, 0.15]$
+\end{itemize}
+
+\textbf{Computing final input vectors} (sum of the three):
+
+"cat" (pos 2, segment A):
+\[
+[0.2,0.9,0.1,0.0] + [0.0,0.2,0.0,0.1] + [0.05,0.05,0.05,0.05] = [0.25, 1.15, 0.15, 0.15]
+\]
+
+"sat" (pos 4, segment B):
+\[
+[0.3,0.2,0.4,0.1] + [0.0,0.1,0.2,0.0] + [0.15,0.15,0.15,0.15] = [0.45, 0.45, 0.75, 0.25]
+\]
+
+\textbf{The key illustrative point} --- the two \texttt{[SEP]} tokens have identical token embeddings but end up different after summation, because position and segment differ:
+
+\texttt{[SEP]} at pos 3 (segment A):
+\[
+[0.0,0.0,0.5,0.5] + [0.2,0.0,0.0,0.2] + [0.05,0.05,0.05,0.05] = [0.25, 0.05, 0.55, 0.75]
+\]
+
+\texttt{[SEP]} at pos 6 (segment B):
+\[
+[0.0,0.0,0.5,0.5] + [0.0,0.2,0.0,0.0] + [0.15,0.15,0.15,0.15] = [0.15, 0.35, 0.65, 0.65]
+\]
+
+Same token, different final representation --- this is exactly what lets the model distinguish "this is the separator ending sentence A" from "this is the separator ending sentence B," purely from the summed embedding, before any attention layer even runs.
+
+\textbf{Was BERT trained on a dataset where each sample contained two sentences?}
+
+Yes --- every training example was a \textbf{pair} of text spans (A, B), packed together as \texttt{[CLS] A [SEP] B [SEP]}, used jointly for two pretraining objectives: \textbf{MLM} and \textbf{NSP}.
+
+Key details on how pairs were constructed:
+
+\begin{itemize}
+\item \textbf{50\% of the time}: B is the actual sentence that follows A in the original text (label = \texttt{IsNext}).
+\item \textbf{50\% of the time}: B is a random sentence sampled elsewhere from the corpus (label = \texttt{NotNext}).
+\end{itemize}
+
+This label is exactly what the NSP objective trains the \texttt{[CLS]} output vector to predict.
+
+Two important nuances:
+
+\begin{enumerate}
+\item \textbf{"Sentence" $\neq$ linguistic sentence.} In the BERT paper, "sentence" just means an arbitrary contiguous span of text --- could be shorter or longer than an actual grammatical sentence. What matters is that it's a coherent chunk.
+\item \textbf{Combined length constraint.} A and B together were capped at 512 tokens (BERT's max sequence length), so the sampling process trimmed one or both sides to fit.
+\end{enumerate}
+
+\textbf{Corpus used}: BooksCorpus (\textasciitilde{}800M words) and English Wikipedia (\textasciitilde{}2,500M words, text passages only --- tables, lists, and headers stripped out).
+
+So the two-sentence structure wasn't incidental --- it was baked into the pretraining data pipeline specifically to support NSP alongside MLM.
+
+\textbf{MLM and NSP are trained jointly not one after the other. What does it mean? How both are trained simultaneously?}
+
+"Jointly" means: for every single training example, \textbf{one forward pass} through the shared BERT encoder produces outputs used for \textit{both} tasks simultaneously, and \textbf{one combined loss} is computed and backpropagated in \textbf{one update step}. It's not "train MLM to convergence, then train NSP" --- both signals push the same shared weights on every single batch.
+
+\textbf{Mechanism, step by step:}
+
+\begin{enumerate}
+\item \textbf{Input}: one packed sequence \texttt{[CLS] A [SEP] B [SEP]}, with \textasciitilde{}15\% of tokens masked (per the MLM procedure) and a known \texttt{IsNext}/\texttt{NotNext} label for the pair.
+\item \textbf{Single forward pass} through the shared Transformer encoder produces contextual embeddings for every position.
+\item \textbf{Two separate heads read from the same output}, but different positions:
+\begin{itemize}
+\item \textbf{MLM head}: takes the output vectors at the \textit{masked} token positions $\to$ feeds each through a linear layer + softmax over the vocabulary $\to$ predicts the original token.
+\item \textbf{NSP head}: takes the output vector at the \textbf{\texttt{[CLS]}} position only $\to$ feeds it through a linear layer + softmax over 2 classes $\to$ predicts \texttt{IsNext}/\texttt{NotNext}.
+\end{itemize}
+\item \textbf{Combined loss} is just the sum:
+\[
+\mathcal{L} = \mathcal{L}_{MLM} + \mathcal{L}_{NSP}
+\]
+where $\mathcal{L}_{MLM}$ is averaged cross-entropy over all masked positions, and $\mathcal{L}_{NSP}$ is cross-entropy over the single \texttt{[CLS]} prediction.
+\item \textbf{One backward pass}: gradients from both losses flow back through their respective heads and \textit{converge} into the same shared encoder weights, since both heads sit on top of the same Transformer stack. The encoder gets updated by the combined gradient signal, not sequentially by one task then the other.
+\end{enumerate}
+
+So "joint" specifically refers to steps 4--5: a single combined loss, single optimizer step, per batch --- both tasks shaping the same shared parameters at the same time, rather than alternating phases or separate training runs.
+
+\textbf{In the BERT paper, each token was represented as a 768 size vector.}
+
+Not universally --- the BERT paper introduced \textbf{two} model sizes, and the hidden size differs:
+
+\begin{itemize}
+\item \textbf{BERT-base}: hidden size = 768 (12 layers, 12 attention heads, \textasciitilde{}110M params)
+\item \textbf{BERT-large}: hidden size = 1024 (24 layers, 16 attention heads, \textasciitilde{}340M params)
+\end{itemize}
+
+So 768 is correct \textbf{only for BERT-base}. If you've mainly seen worked examples using 768, that's likely because BERT-base is the more commonly referenced/used variant in explanations and fine-tuning --- but the paper itself specifies both sizes explicitly.
+
+\textbf{After token, positional, segment embedding each token remains a 768 size vector.}
+
+Right --- for BERT-base. Token, position, and segment embeddings are each 768-dimensional vectors, and since they're summed elementwise (not concatenated), the result is still a single 768-dim vector per token. This summed vector is then passed through LayerNorm and dropout before entering the first encoder layer --- dimensionality stays 768 throughout the entire stack, layer to layer, all the way to the output.
+
+\textbf{After multi-head self-attention and FFN, is each encoder producing a hidden state of size 768 again?}
+
+Yes --- every encoder layer preserves the 768 dimension, both at the attention output and the FFN output. This is a structural requirement, not a coincidence.
+
+\textbf{Why attention output is 768:}
+\begin{itemize}
+\item Q, K, V are each split into 12 heads, each of size $768/12 = 64$.
+\item Each head produces a 64-dim output (weighted sum of V).
+\item All 12 heads' outputs are \textbf{concatenated}: $12 \times 64 = 768$.
+\item This concatenated vector passes through a final output projection matrix $W^O$ (768$\times$768) $\to$ still 768.
+\item Add residual (input + attention output) $\to$ LayerNorm $\to$ still 768.
+\end{itemize}
+
+\textbf{Why FFN output is 768:}
+\begin{itemize}
+\item The FFN is two linear layers: $768 \to 3072 \to 768$ (expansion factor of 4, with GELU in between).
+\item It expands to 3072 internally, but the second linear layer projects back down to 768.
+\item Add residual $\to$ LayerNorm $\to$ still 768.
+\end{itemize}
+
+\textbf{Why it must stay 768 throughout:} the residual connections (\texttt{x + Sublayer(x)}) require the sublayer's output to match the input's dimensionality exactly, so addition is even possible. This forces every layer's output --- across all 12 (or 24) stacked encoder layers --- to stay at 768 (or 1024 for BERT-large). The dimension only changes internally within the FFN's hidden expansion, never at the interface between layers.
+
+\textbf{One thing is confusing, if each token is 768 size vector and let's say in a sample we have 5 tokens. Then shouldn't the input become 768 * 5 size vector? And shouldn't the same happen for output of the encoder?}
+
+The confusion is between \textbf{concatenating vectors into one long vector} vs. \textbf{stacking them as rows in a matrix}. BERT does the latter, not the former.
+
+\textbf{The input is a matrix, not one flat vector.}
+
+With 5 tokens and $d_{model}=768$, the input is a matrix of shape:
+\[
+5 \times 768
+\]
+
+Each \textbf{row} is one token's 768-dim vector. They sit side-by-side as separate rows, not concatenated end-to-end into a single $5 \times 768 = 3840$-dim vector. So token count and vector size are two \textit{separate} dimensions of a 2D matrix, not multiplied into one number.
+
+\textbf{Why this matters for attention:}
+
+Self-attention needs each token to attend to \textit{every other token individually} --- computing similarity scores between each pair of tokens. That only makes sense if each token has its own separate 768-dim vector (a row) that can be compared against other rows via dot products. If everything were flattened into one 3840-dim vector, there'd be no way to isolate "token 3's vector" to compute attention scores with "token 1's vector" --- the individual token boundaries would be lost.
+
+\textbf{Output of the encoder is also a matrix, same shape.}
+
+Every operation inside the encoder --- attention, FFN, LayerNorm --- is applied per-row (per-token position), and each row stays 768-dim throughout. So the encoder output is again:
+\[
+5 \times 768
+\]
+
+--- five rows, each a 768-dim contextualized vector for that token, incorporating information from the other 4 tokens via attention.
+
+\textbf{Summary:} sequence length (5) and hidden size (768) are independent axes of a matrix, not multiplied together. The number of tokens can vary per input; the hidden size (768) is fixed by the architecture and stays constant per token, at every layer.
+
+\textbf{In that case, let's say for high accuracy, I concatenate last four hidden layers, what would be the final size?}
+
+If you concatenate the last 4 hidden layers \textbf{along the feature dimension} (the standard approach from the BERT paper for feature-based use, e.g. NER), each token's vector grows by 4x:
+
+\[
+4 \times 768 = 3072
+\]
+
+So for your 5-token sequence, the result is a matrix of shape:
+\[
+5 \times 3072
+\]
+
+Each row is still one token, but now represented by a 3072-dim vector --- the 768-dim hidden state from layer 9, 10, 11, and 12 (the last four) stacked side-by-side for that token. The number of tokens (5) is unaffected; only the per-token vector size changes, from 768 $\to$ 3072.
+
+This is different from \textbf{summing} the last four layers (another option BERT's authors tested), which would keep the size at 768 per token instead of expanding it --- concatenation preserves more information but costs 4x the dimensionality.
