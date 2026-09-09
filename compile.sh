@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
 BUILD_DIR="$ROOT_DIR/build"
-mkdir -p "$BUILD_DIR"
+PDF_DIR="$ROOT_DIR/pdfs"
+mkdir -p "$BUILD_DIR" "$PDF_DIR"
 
 cd "$SRC_DIR"
 
@@ -12,6 +13,6 @@ cd "$SRC_DIR"
 pdflatex -interaction=nonstopmode -output-directory="$BUILD_DIR" -jobname=cse751 main.tex
 pdflatex -interaction=nonstopmode -output-directory="$BUILD_DIR" -jobname=cse751 main.tex
 
-cp "$BUILD_DIR/cse751.pdf" "$ROOT_DIR/"
+cp "$BUILD_DIR/cse751.pdf" "$PDF_DIR/"
 
 echo "Done. Output: cse751.pdf"

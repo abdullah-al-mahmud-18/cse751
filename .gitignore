@@ -1,5 +1,3 @@
 # LaTeX build artifacts
 build/
-*.pdf
-!cse751.pdf
-!bert_gpt_llama.pdf
+
