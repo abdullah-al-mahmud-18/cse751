@@ -1,0 +1,1943 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\setlist[itemize]{itemsep=1pt,topsep=3pt,parsep=0pt}
+\setlist[enumerate]{itemsep=1pt,topsep=3pt,parsep=0pt}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{Advanced Natural Language Processing\\ Comprehensive Final Examination Study Notes}
+\author{Course Notes}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Part I: Recurrent Models}
+
+\subsection{The Simple Recurrent Neural Network (RNN)}
+
+\paragraph{What it is.} A neural network with a loop: it processes a sequence one token at
+a time and carries a hidden state vector from each step into the next, so that the state
+acts as a summary of everything seen so far.
+
+\paragraph{The idea, plainly.} Imagine reading a sentence with a single sticky note in your
+hand. At each word you (i) read the word, (ii) read your sticky note, (iii) write a new
+sticky note that combines the two, and (iv) throw the old one away. The sticky note is the
+hidden state $h^{(t)}$. Because you rewrite it in exactly the same way at every word, you
+can read a sentence of any length with a fixed amount of machinery.
+
+\paragraph{Mechanics.} With input embedding $x^{(t)}$ and hidden state $h^{(t)}$:
+\[
+h^{(t)} = \tanh\!\left(U h^{(t-1)} + W x^{(t)}\right), \qquad
+o^{(t)} = \mathrm{softmax}\!\left(V h^{(t)}\right).
+\]
+Three observations that the exam likes:
+\begin{itemize}
+\item $x$ and $h$ change at every time step; the parameters $U$, $W$, $V$ do \textbf{not}.
+  They are shared across all positions.
+\item $U$ mixes in history, $W$ mixes in the present word, $V$ reads out a prediction.
+\item $h^{(0)}$ is usually the zero vector.
+\end{itemize}
+
+\paragraph{Problem it solves.} Variable-length input and order-sensitivity, using a constant
+number of parameters. Weight sharing means a model trained on 10-word sentences can process
+a 40-word sentence.
+
+\paragraph{Shapes of RNN problems.} The same cell supports several task shapes
+(Karpathy's taxonomy):
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Shape} & \textbf{Example} \\
+\hline
+one-to-one & Ordinary classification (no recurrence really needed). \\
+one-to-many & Image captioning: one image in, a sentence out. \\
+many-to-one & Sentiment analysis: the last hidden state represents the whole sentence. \\
+many-to-many (aligned) & POS tagging / NER: one label per token. \\
+many-to-many (unaligned) & Machine translation: read all, then write all. \\
+\end{tabularx}
+\end{center}
+
+\paragraph{Advantages.}
+\begin{itemize}
+\item Handles arbitrary length with fixed parameter count.
+\item Parameter sharing gives strong generalisation across positions.
+\item Small memory footprint; state is one vector.
+\item Naturally streaming/online --- it can process a token the moment it arrives.
+\end{itemize}
+
+\paragraph{Disadvantages.}
+\begin{itemize}
+\item \textbf{Sequential by construction}, so it cannot be parallelised along time. Step $t$
+  needs $h^{(t-1)}$.
+\item \textbf{Vanishing (and exploding) gradients} during backpropagation through time.
+\item \textbf{It can only see the past}, not the future context of a token.
+\item \textbf{It must forget the same amount of history at every step}, because the update
+  is a single fixed $\tanh$ transformation --- there is no mechanism to say ``this token
+  matters, keep it for 50 steps''.
+\end{itemize}
+
+\paragraph{What it cannot solve.} Long-term dependencies. Theoretically a simple RNN is
+capable of representing them --- you could hand-pick weights that do it --- but in practice
+gradient descent does not find those weights. This gap between representational capacity
+and learnability is a favourite exam distinction.
+
+\paragraph{What it gave rise to.} The vanishing gradient problem, which motivated gating
+(LSTM, GRU); the past-only limitation, which motivated bidirectional RNNs; the sequential
+bottleneck, which eventually motivated the Transformer.
+
+\paragraph{Use it when.} Short sequences, streaming/low-latency settings, very small
+compute or memory budgets, or as a cheap baseline.
+
+\paragraph{Do not use it when.} Dependencies span more than roughly 10--20 tokens, you have
+GPUs and want to exploit them, or you need state-of-the-art accuracy.
+
+\paragraph{Counterfactual.} \emph{What if the weights were not shared across time steps?}
+You would need a separate $U,W,V$ per position. The parameter count would grow with sequence
+length, the model could never process a sequence longer than the longest one it was built
+for, and a pattern learned at position 3 would not transfer to position 30. Weight sharing
+is not an optimisation detail --- it is the entire reason an RNN generalises over sequences.
+
+\subsection{Backpropagation Through Time and the Vanishing Gradient}
+
+\paragraph{What it is.} BPTT is ordinary backpropagation applied to the RNN after
+``unrolling'' it: the loop is expanded into a deep feed-forward network with one layer per
+time step, all layers sharing the same weights.
+
+\paragraph{The idea, plainly.} A 50-word sentence turns the RNN into a 50-layer network.
+Gradients must be carried back through all 50 layers by repeated multiplication.
+
+\paragraph{Mechanics, and why it fails.} The gradient of the loss at step $T$ with respect
+to the state at step $t$ contains a product of $T-t$ Jacobians:
+\[
+\frac{\partial h^{(T)}}{\partial h^{(t)}} = \prod_{k=t+1}^{T} \frac{\partial h^{(k)}}{\partial h^{(k-1)}}.
+\]
+Each factor involves $U$ and the derivative of $\tanh$ (which is at most 1, and usually
+much less). Multiplying many numbers smaller than one gives a compounding shrinkage:
+\begin{itemize}
+\item If the factors are $<1$, the gradient decays roughly geometrically. After 30--50
+  steps it is numerically zero: the early time steps receive no learning signal.
+  This is the \textbf{vanishing gradient problem}.
+\item If the factors are $>1$, the gradient blows up: the \textbf{exploding gradient
+  problem}. This one is easy to patch with gradient clipping. Vanishing is the hard one,
+  because you cannot ``unclip'' a zero.
+\end{itemize}
+
+\paragraph{Why this is a modelling problem, not a numerical nuisance.} A zero gradient at
+early time steps means the model is literally unable to learn that the word ``France''
+25 tokens ago should influence the current prediction. The failure is in learning long-term
+dependencies, exactly the property we needed.
+
+\paragraph{Counterfactual.} \emph{What if the state update were additive instead of
+multiplicative?} Then the Jacobian would be close to the identity and the gradient would
+flow back nearly unchanged. This is precisely the design that LSTMs adopt for the cell
+state, and later the design that residual connections adopt in Transformers. The same trick
+appears twice in this syllabus --- notice it.
+
+\subsection{Bidirectional RNNs}
+
+\paragraph{What it is.} Two independent RNNs over the same sequence, one running left to
+right and one right to left, whose hidden states are concatenated at each position.
+
+\paragraph{The idea, plainly.} To tag the word ``bank'' you would like to see both ``river''
+before it and ``flooded'' after it. One RNN reads the sentence forwards, another reads it
+backwards, and each position ends up with a representation of its full context:
+$h^{(t)} = [\overrightarrow{h}^{(t)} ; \overleftarrow{h}^{(t)}]$.
+
+\paragraph{Problem it solves.} The ``can only see the past'' limitation of the simple RNN.
+
+\paragraph{Advantages.} Substantially better on tagging tasks (POS, NER, chunking) because
+disambiguation usually needs right context. A bidirectional GRU is a strong default
+starting point for sequence tagging.
+
+\paragraph{Disadvantages.} Roughly doubles compute and parameters. Crucially, it needs the
+\emph{entire} sequence before it can produce any output.
+
+\paragraph{What it cannot solve.} It does not help with generation or with streaming. It
+does not fix vanishing gradients --- each direction still suffers from them.
+
+\paragraph{Use it when.} Offline tasks where the full input is available: classification,
+tagging, encoding the source side of a translation system.
+
+\paragraph{Do not use it when.} Real-time/streaming decoding, or any autoregressive
+generation task --- the backward pass would let the model see the future tokens it is
+supposed to predict, which is leakage.
+
+\paragraph{Counterfactual.} \emph{What if we made a language model bidirectional?}
+It would be trivially able to cheat: predicting token $t$ while its backward pass has
+already read token $t$. This is exactly why BERT cannot simply be trained left-to-right
+bidirectionally and instead has to invent \emph{masking} (Section~\ref{sec:bert}). The
+bidirectional/generation tension is a recurring exam theme.
+
+\section{Part II: Encoder--Decoder and Attention}
+
+\subsection{The Sequence-to-Sequence (Encoder--Decoder) Model}
+
+\paragraph{What it is.} Two recurrent networks joined together. An \textbf{encoder} RNN
+reads the entire input sequence and compresses it into a fixed-size vector called the
+\emph{context vector} (or thought vector). A \textbf{decoder} RNN is initialised with that
+vector and generates the output sequence one token at a time.
+
+\paragraph{The idea, plainly.} Translation is not a tagging problem: ``I am hungry'' (3
+words) becomes ``J'ai faim'' (2 words), and the word order need not match. So you cannot
+emit one output per input. Instead: read the whole English sentence, form a single mental
+summary, then write the French sentence from that summary. The encoder is the reader, the
+context vector is the summary, the decoder is the writer.
+
+\paragraph{Mechanics.}
+\begin{enumerate}
+\item Encoder consumes $x_1 \ldots x_n$; keep the final hidden state $c = h^{(n)}_{\text{enc}}$.
+\item Initialise decoder state with $c$; feed a start token \texttt{<sos>}.
+\item At each decoder step, produce a distribution over the vocabulary, emit a token, and
+  feed that token back in as the next input.
+\item Stop at \texttt{<eos>}.
+\end{enumerate}
+During training the decoder is fed the \emph{ground-truth} previous token rather than its
+own prediction (\textbf{teacher forcing}); at inference it must consume its own outputs
+(\textbf{autoregressive generation}). The mismatch between these two regimes is called
+\emph{exposure bias}.
+
+\paragraph{Problem it solves.} Sequence transduction with unequal, unaligned input and
+output lengths: machine translation, summarisation, dialogue, speech recognition,
+question answering.
+
+\paragraph{Advantages.} Fully general over length pairs; end-to-end trainable; no need for
+hand-built alignment or phrase tables as in statistical MT.
+
+\paragraph{Disadvantages.}
+\begin{itemize}
+\item \textbf{The information bottleneck.} The whole source sentence, however long, must fit
+  into one fixed-size vector. Quality degrades sharply as sentences get longer.
+\item The encoder's final state is biased toward the end of the source sentence.
+\item Still sequential on both sides; still suffers exposure bias.
+\item Errors compound during generation: one wrong token corrupts everything after it.
+\end{itemize}
+
+\paragraph{What it cannot solve.} Long inputs. A 50-word legal sentence and a 5-word
+greeting get the same number of bits of context.
+
+\paragraph{What it gave rise to.} Attention, invented precisely to remove this bottleneck.
+
+\paragraph{Use it when.} Any input-sequence to output-sequence mapping where the two are not
+aligned position-by-position.
+
+\paragraph{Do not use it when.} The task is aligned tagging (use a bidirectional encoder
+with per-token outputs; a decoder is wasted machinery) or classification (use the encoder
+alone).
+
+\paragraph{Counterfactual.} \emph{What if the context vector were passed to every decoder
+step instead of only initialising the first one?} This is in fact a common variant and it
+helps a little --- the decoder stops ``forgetting'' the source as it generates. But it does
+not fix the underlying problem, because the vector is still a single fixed-size summary.
+The real fix has to let the decoder look back at \emph{all} encoder states, which is
+attention.
+
+\subsection{Attention}
+
+\paragraph{What it is.} A mechanism that lets the decoder, at each output step, look back
+over \emph{all} encoder hidden states and build a fresh, weighted summary tailored to the
+word it is about to generate.
+
+\paragraph{The idea, plainly.} A human translator does not memorise the source sentence and
+then recite a translation. They glance back at the relevant source word for each word they
+write. Attention gives the model the same ability: while producing the French word for
+``hungry'' it puts most of its weight on the English token ``hungry'' and little elsewhere.
+
+\paragraph{Mechanics.} Keep every encoder state $h_1 \ldots h_n$ (do not throw them away).
+At decoder step $t$ with decoder state $s_{t}$:
+\begin{align*}
+e_{t,i} &= \mathrm{score}(s_{t}, h_i) && \text{relevance of source position } i \\
+\alpha_{t,i} &= \frac{\exp(e_{t,i})}{\sum_j \exp(e_{t,j})} && \text{softmax: weights sum to 1} \\
+c_t &= \sum_{i=1}^{n} \alpha_{t,i}\, h_i && \text{context vector for this step}
+\end{align*}
+The score function may be a dot product ($s^\top h$), a scaled dot product, or a small
+feed-forward network (additive/Bahdanau attention). The context $c_t$ is then concatenated
+with $s_t$ to predict the output token.
+
+\paragraph{Problem it solves.} The fixed-size bottleneck. The context is now
+\emph{dynamic}: a different summary for every output step, and its size effectively grows
+with the input because all $n$ states remain available.
+
+\paragraph{Advantages.}
+\begin{itemize}
+\item Large quality gains, especially on long sentences.
+\item Creates a shortcut for gradients: the loss at output step $t$ connects directly to
+  encoder state $h_i$ without travelling through $n$ recurrent steps. This substantially
+  eases the vanishing gradient problem.
+\item The weights $\alpha_{t,i}$ form a soft alignment matrix, which is interpretable
+  (a partial answer to the black-box complaint).
+\end{itemize}
+
+\paragraph{Disadvantages.} Computes $n$ scores per output step, so cost is $O(n \cdot m)$
+for input length $n$ and output length $m$; memory grows because all encoder states are
+retained. Interpretability of attention weights is weaker than it looks --- attention is
+correlation, not explanation.
+
+\paragraph{What it cannot solve.} Attention on top of an RNN still leaves the RNN's
+sequential computation intact. Training is still slow, because $h_i$ still has to be
+computed one step at a time. This residual complaint is exactly what the Transformer
+answers.
+
+\paragraph{Use it when.} Any encoder--decoder task; effectively always.
+
+\paragraph{Counterfactual.} \emph{What if we replaced the softmax with a hard argmax
+(``hard attention'')?} The model would attend to exactly one source position. This is
+cheaper at inference and sometimes more interpretable, but the operation is not
+differentiable, so you would need reinforcement learning or a relaxation to train it.
+Soft attention is used almost universally because it is differentiable end-to-end --- a
+good illustration of a design chosen for trainability rather than realism.
+
+\subsection{Why GPUs Matter (and Why Recurrence Became Unacceptable)}
+
+\paragraph{The hardware argument.} CPUs are latency-optimised: a few very fast cores,
+designed to finish a single instruction chain quickly. GPUs are bandwidth-optimised:
+thousands of simple cores plus very fast VRAM, designed to perform the same operation on
+enormous amounts of data at once.
+
+\paragraph{Why deep networks fit GPUs.} A neural layer is a matrix multiplication --- many
+identical neurons performing the same computation on different data. That is precisely the
+workload a GPU is built for. The more arithmetic per unit of data movement, the larger the
+GPU's advantage. Massive thread parallelism also hides memory latency.
+
+\paragraph{Why this doomed the RNN.} An RNN's time axis is a strict dependency chain: you
+cannot compute $h^{(5)}$ before $h^{(4)}$. So the one axis with the most work in it cannot
+be parallelised. As GPUs got faster, RNN training time barely improved. A model that can
+compute all positions simultaneously would convert hardware progress directly into research
+progress. That model is the Transformer, and the observation above is the real motivation
+behind ``Attention Is All You Need''.
+
+\section{Part III: The Transformer}
+
+\subsection{Overview}
+
+\paragraph{What it is.} An encoder--decoder architecture that removes recurrence and
+convolution entirely, and relies only on attention plus position-wise feed-forward layers.
+Introduced in \emph{Attention Is All You Need} (Vaswani et al., 2017).
+
+\paragraph{The idea, plainly.} If attention already lets a decoder look anywhere in the
+source, why not let \emph{every} token look at every other token directly, and drop the
+recurrent chain altogether? Then all positions can be computed in one parallel matrix
+multiplication. The price is that, without recurrence, the model has no idea what order the
+tokens came in --- so order must be injected separately.
+
+\paragraph{The stack, in the original paper.}
+\begin{itemize}
+\item Encoder: $N = 6$ identical layers. Each layer = multi-head self-attention $\rightarrow$
+  Add \& Norm $\rightarrow$ position-wise feed-forward network $\rightarrow$ Add \& Norm.
+\item Decoder: $N = 6$ identical layers. Each layer = \emph{masked} multi-head self-attention
+  $\rightarrow$ Add \& Norm $\rightarrow$ encoder--decoder (cross) attention $\rightarrow$
+  Add \& Norm $\rightarrow$ feed-forward $\rightarrow$ Add \& Norm.
+\item Dimensions: $d_{\text{model}} = 512$, $h = 8$ heads, $d_k = d_v = 64$,
+  $d_{\text{ff}} = 2048$. Every sub-layer and the embedding layer outputs
+  $d_{\text{model}}$, which is what makes residual connections possible.
+\item Every sub-layer is wrapped as $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$.
+\end{itemize}
+
+\subsection{Self-Attention}
+
+\paragraph{What it is.} Attention where the queries, keys and values all come from the same
+sequence: each token attends to every token in its own sentence, including itself.
+
+\paragraph{Why ``self''.} Ordinary attention asks ``which source words matter for this
+target word?'' --- the query comes from a different sequence and often a different task.
+Self-attention asks ``which words in \emph{this same} sentence matter for understanding
+\emph{this} word?''. In ``The animal didn't cross the street because \textbf{it} was too
+tired'', self-attention is what lets ``it'' bind to ``animal'' rather than ``street''.
+Trivial for a human, historically very hard for a machine.
+
+\paragraph{The Q/K/V metaphor (from information retrieval).} Each token is linearly
+projected three times:
+\begin{itemize}
+\item \textbf{Query} --- the search string you type into YouTube.
+\item \textbf{Key} --- the video titles the system matches your string against.
+\item \textbf{Value} --- the actual videos returned to you.
+\end{itemize}
+Ranking by query--key similarity and returning a blend of the corresponding values is
+exactly what we want: score every other word (key) against the current word (query), then
+mix their contents (values) accordingly.
+
+\paragraph{Mechanics.} With $X \in \mathbb{R}^{n \times d_{\text{model}}}$:
+\[
+Q = XW^Q,\quad K = XW^K,\quad V = XW^V, \qquad
+\mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V .
+\]
+Step by step:
+\begin{enumerate}
+\item $QK^\top$ gives an $n \times n$ matrix of raw similarity scores (dot product = how
+  aligned two vectors are).
+\item Divide by $\sqrt{d_k}$ --- \textbf{scaling}. With $d_k = 64$ this is a division by 8.
+\item Softmax each row so the weights over the sentence sum to 1.
+\item Multiply by $V$ to get, for each token, a weighted blend of all tokens' values.
+\end{enumerate}
+Note that $d_k = 64$ is deliberately smaller than $d_{\text{model}} = 512$: each head works
+in a compressed subspace, so that $h=8$ heads together cost about the same as one full-width
+attention.
+
+\paragraph{Problem it solves.} Direct, constant-length paths between any two positions. In
+an RNN, information from token 1 reaches token 50 through 49 sequential transformations; in
+self-attention it is one hop. It also makes the whole sequence computable in parallel,
+because the operation is just three matrix multiplications and a softmax.
+
+\paragraph{Advantages.}
+\begin{itemize}
+\item Maximum path length between any two tokens is $O(1)$: excellent for long-range
+  dependencies.
+\item Fully parallel across positions: converts GPU throughput directly into training speed.
+\item Content-based, dynamic routing: what attends to what depends on the actual input, not
+  on fixed positions as in a convolution.
+\end{itemize}
+
+\paragraph{Disadvantages.}
+\begin{itemize}
+\item $O(n^2)$ time and memory in the sequence length, because of the $n \times n$ score
+  matrix. This is the single biggest cost driver in modern LLMs.
+\item Permutation invariant on its own --- it has no notion of order.
+\item No built-in locality bias, so it is data-hungry: it must learn from scratch that
+  nearby words are usually more relevant.
+\end{itemize}
+
+\paragraph{Counterfactual 1.} \emph{What if we dropped the $\sqrt{d_k}$ scaling?} For large
+$d_k$ the dot products have large variance and grow in magnitude. Feeding large values into
+softmax pushes it into a saturated regime --- one weight near 1, the rest near 0 --- where
+its gradient is almost zero. Training would stall or become unstable. The scaling keeps the
+logits in a range where softmax has usable gradients. Expect this as an exam question.
+
+\paragraph{Counterfactual 2.} \emph{What if $Q$, $K$ and $V$ were the same vectors, with no
+projections?} The score matrix would be $XX^\top$, which is symmetric, so ``A attends to B''
+would always equal ``B attends to A''. Real linguistic relations are asymmetric --- a
+pronoun depends on its antecedent, not the reverse. Separate $W^Q$ and $W^K$ break the
+symmetry. A separate $W^V$ additionally lets the model decide that the information worth
+\emph{passing on} differs from the information used for \emph{matching}.
+
+\subsection{Multi-Head Attention}
+
+\paragraph{What it is.} Run $h$ self-attention operations in parallel with different learned
+projections, concatenate their outputs, and pass the result through a final linear layer
+$W^O$.
+\[
+\mathrm{MultiHead}(Q,K,V) = \mathrm{Concat}(\mathrm{head}_1, \ldots, \mathrm{head}_h)\,W^O,
+\]
+\[
+\mathrm{head}_i = \mathrm{Attention}(XW_i^Q, XW_i^K, XW_i^V).
+\]
+
+\paragraph{The idea, plainly.} A single attention distribution has to commit to one
+weighting. But ``it'' may need to attend to its antecedent \emph{and} the current verb
+\emph{and} the sentence topic at the same time. One head cannot express three different
+weightings simultaneously; averaging them muddles all three. Multiple heads let the model
+maintain several relationship types in parallel --- one head may track syntactic subjects,
+another coreference, another local adjacency. As the lecture puts it: multiple heads can
+(hopefully) focus on more things than one head can.
+
+\paragraph{Advantages.} Richer representations at essentially no extra cost, since each head
+is narrower ($d_k = d_{\text{model}} / h$). Also gives redundancy: heads can be pruned later.
+
+\paragraph{Disadvantages.} Many heads are demonstrably redundant and can be removed with
+little loss --- so the mechanism is not as efficient as it appears. Head interpretations are
+suggestive, not reliable.
+
+\paragraph{Counterfactual.} \emph{What if we used one head of full width $d_{\text{model}}$
+instead of eight of width 64?} Parameter count would be similar, but the layer could
+represent only one attention pattern per layer. Empirically this is clearly worse. The
+lesson is that the benefit comes from having \emph{multiple simultaneous} attention
+distributions, not from extra parameters.
+
+\subsection{Positional Encoding}
+
+\paragraph{What it is.} A vector added to each input embedding that encodes the token's
+position in the sequence.
+
+\paragraph{Why it is necessary.} Self-attention treats its input as a \emph{set}. Shuffle
+the tokens and every attention score is unchanged; the outputs just permute along with the
+inputs. Without positional information the Transformer is a sophisticated bag of words, and
+``dog bites man'' equals ``man bites dog''.
+
+\paragraph{Mechanics (sinusoidal).} For position $k$, embedding dimension $d$, index
+$0 \le i < d/2$, and a scalar $n$ set to $10000$ in the paper:
+\[
+PE(k, 2i) = \sin\!\left(\frac{k}{n^{2i/d}}\right), \qquad
+PE(k, 2i+1) = \cos\!\left(\frac{k}{n^{2i/d}}\right).
+\]
+Properties worth memorising:
+\begin{itemize}
+\item Same dimension as the embedding, so it can simply be added.
+\item Each dimension is a sinusoid of a different wavelength, from short (fast-varying, fine
+  position) to very long (slow-varying, coarse position) --- like the hands of a clock at
+  different speeds.
+\item Because it is a fixed periodic function, the encoding of position 7 is the same in
+  every example regardless of sentence length, and the model can extrapolate somewhat to
+  lengths not seen in training.
+\item $PE_{k+\delta}$ is a fixed linear function of $PE_k$, so relative offsets are easy for
+  the model to compute.
+\item Positional encodings can also be \emph{learned}; in practice learned embeddings did
+  not perform better in the original experiments, and they cannot extrapolate beyond the
+  trained maximum length.
+\end{itemize}
+
+\paragraph{Counterfactual 1.} \emph{What if we omitted positional encoding entirely?} The
+model becomes permutation-invariant. It could still do bag-of-words tasks like topic
+classification reasonably, but syntax, negation scope, and translation would collapse.
+
+\paragraph{Counterfactual 2.} \emph{What if we used a simple integer position, $p_k = k$?}
+The magnitude would grow without bound, dominating the embedding and destabilising training,
+and the network would have to learn to decode a scalar into useful relative-distance
+features. The sinusoidal scheme is bounded, smooth, and already exposes multiple scales.
+
+\paragraph{Counterfactual 3.} \emph{What if position were concatenated instead of added?}
+This works and is arguably cleaner conceptually, but it costs extra dimensions in every
+subsequent layer. Addition is chosen for efficiency; the model can learn to allocate
+subspaces to content versus position.
+
+\subsection{Residual Connections and Layer Normalisation (Add \& Norm)}
+
+\paragraph{What it is.} Around every sub-layer, the input is added to the output and the sum
+is normalised: $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$.
+
+\paragraph{The ``Add'' part.} The residual connection provides an identity path from input to
+output. Two benefits:
+\begin{itemize}
+\item \textbf{Preserves information.} Attention re-mixes tokens; without the shortcut, the
+  original token identity would be progressively washed out across 6 (or 96) layers.
+\item \textbf{Handles vanishing gradients.} The derivative through $x + f(x)$ is
+  $1 + f'(x)$, so gradient can flow straight back through the $1$. This is the same additive
+  highway idea as the LSTM cell state --- and it is why 100-layer Transformers are trainable
+  at all.
+\end{itemize}
+Concretely, in the first encoder layer the ``Add'' literally adds the multi-head attention
+output to the (embedding + positional encoding) input.
+
+\paragraph{The ``Norm'' part: layer normalisation.} Normalise each vector to zero mean and
+unit variance \emph{across its own feature dimensions}, then rescale with learned gain and
+bias. Contrast with batch normalisation, which computes mean and variance for each neuron
+across a mini-batch of training cases. Batch norm dramatically reduces training time in
+feed-forward networks, but it is a poor fit here:
+\begin{itemize}
+\item Sequences have variable length and heavy padding, so per-neuron batch statistics are
+  noisy and ill-defined.
+\item Batch norm behaves differently at training and inference time, and depends on batch
+  size --- awkward for autoregressive decoding one token at a time.
+\item Layer norm is computed per token, independently of the batch, so it behaves
+  identically in training and inference.
+\end{itemize}
+
+\paragraph{Pre-norm vs post-norm.} The original paper normalises \emph{after} the residual
+addition (post-norm). Modern large models (including LLaMA) normalise the \emph{input} of
+each sub-layer instead (pre-norm), because post-norm requires careful learning-rate warm-up
+and becomes unstable at great depth. Pre-norm keeps a completely clean residual path from
+the first layer to the last.
+
+\paragraph{Counterfactual.} \emph{What if we removed the residual connections?} Deep stacks
+would become untrainable: gradients would vanish and the token's own identity would be lost
+after a few rounds of attention mixing. Empirically, removing residuals from a Transformer
+is catastrophic, far more so than removing multi-head structure.
+
+\subsection{The Position-wise Feed-Forward Network}
+
+\paragraph{What it is.} A two-layer MLP applied independently and identically to every
+position:
+\[
+\mathrm{FFN}(x) = \max(0,\, xW_1 + b_1)W_2 + b_2 ,
+\]
+with inner dimension $d_{\text{ff}} = 2048$ against $d_{\text{model}} = 512$.
+
+\paragraph{Why it is there.} Attention is essentially a weighted \emph{average} --- a linear
+operation once the weights are fixed. Stacking averages without nonlinearity would collapse.
+The FFN provides the per-token nonlinear processing: attention gathers information from
+other tokens, the FFN then thinks about it. A useful slogan: \emph{attention mixes across
+tokens, the FFN mixes across features}. It also holds most of the parameters (roughly
+two-thirds of a Transformer block), and is widely believed to store much of the model's
+factual knowledge --- which is why Mixture-of-Experts models make \emph{this} layer the
+expert layer.
+
+\subsection{The Decoder}
+
+\paragraph{Three distinguishing features.}
+\begin{enumerate}
+\item \textbf{Right-shifted input.} The target sequence is offset by one position, so that
+  when predicting token $i$ the decoder has been given tokens $1 \ldots i-1$. This is what
+  makes autoregression well-defined.
+\item \textbf{Masked multi-head self-attention.} Positions are forbidden from attending to
+  \emph{subsequent} positions. Implemented by setting the corresponding scores to $-\infty$
+  before the softmax, so their weights become exactly zero. Combined with the right shift,
+  this guarantees that the prediction for position $i$ depends only on outputs before $i$.
+\item \textbf{Encoder--decoder (cross) attention.} An extra sub-layer where the \emph{queries}
+  come from the decoder and the \emph{keys and values} come from the encoder output. This is
+  the classical seq2seq attention, now expressed in Q/K/V form: use the current partial
+  translation as query to look up relevant source content.
+\end{enumerate}
+
+\paragraph{Final linear and softmax layer.} The decoder's top-layer vector is projected by a
+linear layer to vocabulary size (the ``logits'' vector), then softmax converts it into a
+probability distribution. Greedy decoding takes the argmax; beam search keeps several
+hypotheses; sampling with temperature and top-$k$/top-$p$ is used for creative generation.
+
+\paragraph{Counterfactual.} \emph{What if we removed the causal mask during training?} The
+model would see the answer while predicting it, achieve near-zero training loss, and be
+completely useless at generation time, when future tokens do not exist. The mask is not a
+performance trick --- it is what makes the training objective match the inference procedure.
+
+\subsection{Byte-Pair Encoding (BPE) and Subword Tokenization}
+
+\paragraph{The problem.} Word-level tokenization needs a fixed vocabulary. Real language
+defeats it:
+\begin{itemize}
+\item German compounds: \emph{Krankenhaus} = \emph{kranken} (sick) + \emph{haus} (house)
+  = hospital. Every compound would be a new word.
+\item English inflection: \emph{low}, \emph{lower}, \emph{lowest} become three unrelated
+  entries.
+\item Any unseen word maps to \texttt{<UNK>}, destroying information --- fatal for names,
+  typos, code and morphologically rich languages.
+\end{itemize}
+Character-level tokenization avoids \texttt{<UNK>} but makes sequences very long and forces
+the model to relearn spelling. Stemming and lemmatisation are not used, because they are
+language-specific, lossy, and rule-based.
+
+\paragraph{What BPE is.} A data-driven compression algorithm turned into a tokenizer. Start
+from characters (or bytes) and repeatedly merge the most frequent adjacent pair into a new
+symbol, for a fixed number of merges. Frequent words end up as single tokens; rare words
+decompose into meaningful pieces.
+
+\paragraph{Worked example (from the lecture).}
+\[
+\texttt{aaabdaaabac} \rightarrow \texttt{ZabdZabac}\ (Z{=}aa) \rightarrow
+\texttt{ZYdZYac}\ (Y{=}ab) \rightarrow \texttt{XdXac}\ (X{=}ZY)
+\]
+
+\paragraph{Advantages.} Fixed, tunable vocabulary size; no out-of-vocabulary tokens (with
+byte-level BPE, literally any input is representable); shares subwords across related words;
+gives sensible splits for morphology.
+
+\paragraph{Disadvantages.} Splits are statistical, not linguistic, so they sometimes cut
+across morpheme boundaries; token counts are unfair across languages (non-English and
+non-Latin scripts consume more tokens for the same content, making them more expensive and
+effectively giving them less context); and it makes character-level tasks (counting letters,
+rhyming) unnaturally hard for the model.
+
+\paragraph{The family, and who uses what.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Scheme} & \textbf{Used by} \\
+\hline
+BPE / byte-level BPE & GPT-2, GPT-3, RoBERTa \\
+WordPiece & BERT (merges by likelihood gain rather than raw frequency) \\
+SentencePiece & T5, LLaMA (treats input as a raw byte stream, so no pre-tokenization is
+needed and whitespace is reversible; works for languages without spaces) \\
+\end{tabularx}
+\end{center}
+
+\subsection{Transformer: Summary Judgement}
+
+\paragraph{Problems it solves.} Parallel training; constant-path-length long-range
+dependencies; a single architecture that transfers to almost every modality.
+
+\paragraph{What it cannot solve.}
+\begin{itemize}
+\item Quadratic cost in sequence length --- long documents remain expensive.
+\item It has no memory beyond its context window; it is stateless between calls.
+\item It is extremely data- and compute-hungry, because it encodes almost no inductive bias
+  (no locality, no recurrence). On small datasets an LSTM or CNN often wins.
+\item Fixed maximum length: once trained, extending context is non-trivial.
+\end{itemize}
+
+\paragraph{What it gave rise to.} The pretraining era (BERT, GPT), and with it a whole new
+set of problems: models too large to train per task, too large to deploy, misaligned with
+user intent, and confidently wrong. Parts IV--IX are the responses to those.
+
+\paragraph{Use it when.} You have substantial data and GPUs, need long-range dependencies,
+or want to build on a pretrained checkpoint (which today is nearly always).
+
+\paragraph{Do not use it when.} Data is small and no suitable pretrained model exists;
+sequences are extremely long and you cannot afford $O(n^2)$; or the deployment target is
+tiny and streaming, where a GRU may be preferable.
+
+\section{Part IV: Pretraining, BERT and GPT}
+
+\subsection{Pretraining and Transfer Learning}
+
+\paragraph{The motivating problem.} Training a Transformer from scratch is exceptionally
+difficult: not enough hardware, not enough time, and rarely enough labelled data for the
+specific task you care about.
+
+\paragraph{The insight.} Most of what a model needs to know --- syntax, word senses, world
+facts, discourse conventions --- is task-independent. So let an organisation with the
+hardware train a general \emph{language representation} once on unlabelled text, and let
+everyone else adapt that representation to their task with a small labelled dataset.
+
+\paragraph{Two ways to use a pretrained model.}
+\begin{itemize}
+\item \textbf{Fine-tuning:} add a thin task-specific output layer and continue training all
+  (or most) parameters on your labelled data. Usually more accurate.
+\item \textbf{Feature extraction:} freeze the model, run your data through it once, and use
+  the resulting contextual vectors as inputs to any classifier. Cheaper, and lets you
+  precompute embeddings; useful when you cannot afford to fine-tune or must serve many tasks
+  from one frozen backbone. For BERT, concatenating the last four layers was found to be the
+  best feature-based configuration.
+\end{itemize}
+
+\paragraph{Why unlabelled text is enough.} Because the training signal is manufactured from
+the text itself --- predict a hidden word, or predict the next word. This is
+\emph{self-supervised} learning, and it is why the internet becomes a training set.
+
+\subsection{BERT}
+\label{sec:bert}
+
+\paragraph{What it is.} Bidirectional Encoder Representations from Transformers: a stack of
+Transformer \emph{encoders} pretrained to produce deep bidirectional representations of text
+by jointly conditioning on both left and right context in all layers. A pretrained BERT can
+be fine-tuned with just one additional output layer to reach state of the art on a wide
+range of tasks.
+
+\paragraph{The idea, plainly.} Earlier models read a sentence in one direction (or ran two
+independent one-directional models and glued them together). BERT wanted a representation of
+``bank'' that is informed by ``river'' on the left and ``flooded'' on the right
+\emph{simultaneously, in every layer}. The obstacle described in the bidirectional RNN
+section applies: a model that can see the whole sentence cannot be trained to predict the
+next word, because it would see the answer. BERT's solution is to change the task.
+
+\paragraph{Sizes.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYYY}
+\textbf{Model} & \textbf{Encoder layers} & \textbf{Heads / hidden units} & \textbf{Parameters} \\
+\hline
+BERT-base & 12 & 12 heads, 768 hidden & 110 million \\
+BERT-large & 24 & 16 heads, 1024 hidden & 340 million \\
+\end{tabularx}
+\end{center}
+Tokenization is WordPiece. Inputs are built as
+\texttt{[CLS] sentence A [SEP] sentence B [SEP]}, with token, segment and position
+embeddings summed. The final hidden state of \texttt{[CLS]} is the aggregate sequence
+representation used for classification.
+
+\paragraph{Pretraining task 1: Masked Language Modelling (MLM).} Choose 15\% of tokens at
+random as prediction targets. For each chosen token:
+\begin{itemize}
+\item 80\% of the time, replace it with \texttt{[MASK]};
+\item 10\% of the time, replace it with a random token;
+\item 10\% of the time, leave it unchanged.
+\end{itemize}
+The model must predict the original token. Because it does not know which positions were
+corrupted or left alone, it is forced to build a good contextual representation of
+\emph{every} token.
+
+\paragraph{Why the 80/10/10 split?} \texttt{[MASK]} never appears during fine-tuning, so a
+model trained on 100\% \texttt{[MASK]} would suffer a pretrain/fine-tune mismatch. The
+random-token 10\% forces the model to keep a distributional representation of every input
+token rather than trusting it blindly; the unchanged 10\% biases the representation toward
+the actual observed word. The paper's ablation shows fine-tuning is fairly robust to the
+exact ratios, but the feature-based setting (where representations are frozen and the
+mismatch cannot be corrected) degrades noticeably with a 100\% \texttt{[MASK]} strategy.
+That is the sharpest way to state the justification.
+
+\paragraph{Pretraining task 2: Next Sentence Prediction (NSP).} Given sentences A and B,
+predict whether B actually followed A. Half the training pairs are genuine successors and
+half are random sentences from the corpus. Motivation: important tasks --- question
+answering, natural language inference --- are about relationships \emph{between} sentences,
+which single-sentence language modelling never teaches.
+
+\paragraph{Advantages.}
+\begin{itemize}
+\item Deeply bidirectional context in every layer; excellent for understanding tasks.
+\item One pretrained model, many downstream tasks, with only a small head added.
+\item Dramatically reduces labelled-data requirements.
+\end{itemize}
+
+\paragraph{Disadvantages.}
+\begin{itemize}
+\item \textbf{Cannot generate text.} It is an encoder; there is no autoregressive decoder.
+\item Only 15\% of tokens contribute to the loss per batch, so pretraining converges more
+  slowly per step than left-to-right modelling. (The paper's ablation confirms MLM converges
+  slightly slower but overtakes left-to-right in absolute accuracy almost immediately.)
+\item Pretrain/fine-tune mismatch from the artificial \texttt{[MASK]} symbol.
+\item Requires a fine-tuning step and labelled data per task --- no zero-shot ability.
+\item Fixed 512-token limit; large, slow to serve.
+\end{itemize}
+
+\paragraph{What it cannot solve.} Open-ended generation, translation, summarisation, dialogue
+--- anything that produces a sequence.
+
+\paragraph{What it gave rise to.} RoBERTa (drop NSP, train longer on more data --- showing
+NSP was not essential), ALBERT (parameter sharing), DistilBERT (distillation), ELECTRA
+(replaced-token detection to use 100\% of tokens as signal), and the general recognition
+that pretraining objectives are a design space in their own right.
+
+\paragraph{Use it when.} Classification, sentiment, NER, extractive QA, sentence similarity,
+retrieval embeddings --- any task where you need to \emph{understand} a fixed text and where
+a 110M-parameter model that runs cheaply beats calling an LLM API.
+
+\paragraph{Do not use it when.} You need generation, or zero/few-shot behaviour with no
+labelled data, or inputs longer than 512 tokens.
+
+\paragraph{Counterfactual 1.} \emph{What if BERT had been trained left-to-right instead of
+with masking?} It would be GPT. You would gain generation ability and lose the right-context
+information that makes it so strong at classification and extractive QA. The paper's own
+ablation shows the left-to-right variant is worse on MNLI.
+
+\paragraph{Counterfactual 2.} \emph{What if masking used 100\% \texttt{[MASK]}?} See above:
+fine-tuning barely changes, but frozen feature quality drops (NER feature-based falls from
+94.9 to 94.0 in the ablation), because the model never learns useful representations for
+\emph{uncorrupted} tokens --- which are the only kind it will ever see downstream.
+
+\paragraph{Counterfactual 3.} \emph{What if we masked 50\% of tokens instead of 15\%?}
+Too little surviving context to reconstruct from, so representations would be poorer. Mask
+too few, and each expensive forward pass yields almost no training signal. 15\% is a
+compromise between signal per step and context per prediction.
+
+\paragraph{Counterfactual 4.} \emph{What if NSP were dropped?} RoBERTa did exactly this and
+performed \emph{better}, given more data and longer training. The lesson: NSP is a weak
+objective, partly because ``random sentence from a different document'' can be detected on
+topic alone rather than by genuine discourse reasoning.
+
+\subsection{GPT: Decoder-Only Generative Models}
+
+\paragraph{What it is.} A stack of Transformer \emph{decoder} blocks (masked self-attention
+plus feed-forward; no cross-attention, since there is no encoder) trained with causal
+language modelling: predict the next token.
+
+\paragraph{The idea, plainly.} Nearly every NLP task can be written as text continuation.
+``Translate to French: I am hungry $\rightarrow$'' is a prompt; the translation is simply the
+most likely continuation. So instead of designing one architecture per task, train one model
+to continue text extremely well and phrase every task as a continuation.
+
+\paragraph{Why decoder-only.} Autoregressive next-token prediction requires that position $i$
+cannot see position $i+1$; that is exactly what the decoder's masked self-attention provides.
+The encoder--decoder split is only needed when input and output are genuinely different
+sequences; if you concatenate prompt and answer into one stream, a single masked stack
+suffices.
+
+\paragraph{The generations.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Model} & \textbf{What changed} \\
+\hline
+GPT-1 (2018) & ``Improving Language Understanding by Generative Pre-Training.''
+Established the recipe: generative pretraining on unlabelled text, then discriminative
+fine-tuning per task. About 120 million parameters. \\
+GPT-2 (2019) & A direct scale-up of GPT-1 --- roughly ten times the parameters (1.5 billion)
+and ten times the data. Trained on WebText: pages linked from Reddit posts with at least 3
+karma before December 2017, about 45 million links and 40 GB of text. The conceptual leap:
+if a language model is powerful enough and the corpus diverse enough, the corpus itself
+contains demonstrations of many tasks, so \emph{fine-tuning becomes unnecessary}. Hence the
+title: ``Language Models are Unsupervised Multitask Learners.'' Last GPT model released
+publicly. \\
+GPT-3 (2020) & Scaled again to 175 billion parameters; roughly 300 billion training tokens
+drawn from CommonCrawl, WebText, English Wikipedia and two book corpora (about 570 GB of
+plaintext). Reported cost on the order of 355 GPU-years and several million dollars. Its
+defining property is being a much better \emph{in-context learner}. API access only.
+InstructGPT and GPT-3.5 added instruction tuning and RLHF, and made the current LLM boom
+possible. \\
+GPT-4 (2023) & Multimodality, heavy instruction tuning, reinforcement learning from human and
+AI feedback, larger context windows (up to 32k tokens in the released variants) and much
+stronger chat behaviour. \\
+\end{tabularx}
+\end{center}
+
+\paragraph{The trajectory in one sentence.} GPT-1 = pretrain then fine-tune; GPT-2 = maybe you
+do not need to fine-tune; GPT-3 = you definitely do not, just show examples in the prompt;
+GPT-4 = now make it obedient, safe and multimodal.
+
+\paragraph{Advantages.} Generation; one model for all tasks; zero- and few-shot ability;
+capabilities emerge with scale that were not explicitly trained for.
+
+\paragraph{Disadvantages.} Unidirectional context, so per-parameter it is weaker than BERT at
+pure understanding tasks; extremely expensive to train and serve; hallucinates confidently;
+outputs are stochastic and hard to guarantee.
+
+\paragraph{What it cannot solve.} Guaranteed factual accuracy; knowledge after its training
+cut-off; access to private data; genuine multi-step deliberation in a single forward pass;
+arithmetic reliability.
+
+\paragraph{What it gave rise to.} The whole second half of this syllabus: efficiency methods
+(the models are too big), alignment methods (they are not obedient), RAG (they are not
+grounded), agents (they are passive), and evaluation research (nobody knows how to score
+them).
+
+\paragraph{Use it when.} Generation, open-ended tasks, few-shot settings, or when you need one
+system to cover many tasks.
+
+\paragraph{Do not use it when.} You have a narrow, high-volume classification task with
+labelled data --- fine-tuned BERT will be cheaper, faster and often more accurate --- or when
+outputs must be verifiable and deterministic.
+
+\paragraph{Counterfactual.} \emph{What if GPT had used an encoder--decoder instead?} You get
+T5/BART. These are genuinely better for tasks with a clear input--output split (translation,
+summarisation) because the encoder can be bidirectional over the input. But they are more
+complex, and once prompting proved that everything can be expressed as continuation, the
+simpler decoder-only stack won on scaling convenience.
+
+\subsection{Choosing an Architecture: The Decision Table}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Family} & \textbf{Attention pattern} & \textbf{Best suited to} \\
+\hline
+Encoder-only (BERT, RoBERTa) & Bidirectional & Classification, NER, extractive QA,
+sentence similarity, embeddings for retrieval \\
+Decoder-only (GPT, LLaMA) & Causal (masked) & Free-form generation, chat, code, few-shot
+tasks, anything open-ended \\
+Encoder--decoder (original Transformer, T5, BART) & Bidirectional encoder + causal decoder
+with cross-attention & Translation, summarisation, and other tasks with a distinct source
+and target \\
+\end{tabularx}
+\end{center}
+
+\paragraph{Rule of thumb for the exam.} \emph{Understand a fixed text} $\rightarrow$ encoder.
+\emph{Produce free text} $\rightarrow$ decoder. \emph{Transform one text into another}
+$\rightarrow$ encoder--decoder.
+
+\section{Part V: How Large Language Models Are Pretrained}
+
+\subsection{The Next-Token Prediction Objective}
+
+\paragraph{The task.} Given \texttt{"The capital of Bangladesh is"}, produce
+\texttt{"Dhaka"}. Formally, maximise the probability the model assigns to the correct next
+token, over the whole corpus.
+
+\paragraph{The loss.} Cross-entropy between the model's predicted distribution over the
+vocabulary and the one-hot target. For a single position with true token $y$:
+\[
+\mathcal{L} = -\log p_\theta(y \mid x_{<t}).
+\]
+Perplexity, the standard reporting metric, is $\exp$ of the average of this loss.
+
+\paragraph{Teacher forcing.} During training the model is fed the \emph{ground-truth}
+previous tokens, never its own predictions. This is what allows every position in a sequence
+to be trained in parallel in a single forward pass --- if the model had to consume its own
+outputs during training, training would become sequential and lose the Transformer's main
+advantage.
+
+\paragraph{Autoregressive generation.} At inference there is no ground truth, so the model's
+own output at step $t$ becomes its input at step $t+1$.
+
+\paragraph{The tension between them (exposure bias).} The model is only ever trained on
+perfect prefixes but is deployed on prefixes it wrote itself, which contain its own mistakes.
+Once it makes an error it is in a state it never saw during training, and errors compound.
+This is one root cause of degeneration and of hallucination cascades.
+
+\paragraph{Counterfactual.} \emph{What if we trained without teacher forcing, always feeding
+the model's own outputs?} Training would match inference (removing exposure bias), but early
+in training the model's outputs are noise, so it would have almost nothing to learn from;
+convergence would be far slower or fail entirely; and training would become sequential.
+Scheduled sampling --- gradually mixing in the model's own predictions --- is the compromise,
+but teacher forcing remains standard because parallelism matters more.
+
+\subsection{Training Data}
+
+\paragraph{Common sources.}
+\begin{itemize}
+\item \textbf{Common Crawl} --- petabyte-scale web pages. Huge but very noisy.
+\item \textbf{Books} --- Project Gutenberg and other, less clearly licensed libraries. Long,
+  coherent, high-quality prose; teaches long-range structure.
+\item \textbf{Wikipedia} --- clean, structured, factual.
+\item \textbf{Academic papers} --- ArXiv, PubMed. Technical vocabulary and reasoning.
+\item \textbf{Code repositories} --- GitHub. Notably improves reasoning and structured output
+  even for non-code tasks.
+\end{itemize}
+
+\paragraph{The governing principle.} Data quality outweighs raw quantity. Aggressive
+filtering, deduplication and quality classifiers routinely beat simply adding more raw web
+text.
+
+\paragraph{Problems with the data.}
+\begin{itemize}
+\item \textbf{Quality:} spam, machine-generated text, boilerplate.
+\item \textbf{Diversity:} heavy skew toward English and toward the demographics that write
+  most on the web; low-resource languages are badly underserved.
+\item \textbf{Contamination:} benchmark test sets appear in the crawl, so evaluation scores
+  become unreliable (see Section~\ref{sec:eval}).
+\item \textbf{Bias and toxicity:} the model inherits whatever the corpus contains.
+\item \textbf{Legal and ethical status:} copyright, licensing, consent, and personal data
+  scraped without permission.
+\end{itemize}
+
+\subsection{Scaling Laws and the Chinchilla Result}
+
+\paragraph{What scaling laws are.} Empirical power-law relationships showing that loss falls
+predictably as model parameters, dataset size and compute increase. They let you forecast the
+performance of a model you have not yet trained, which is what makes multi-million-dollar
+training runs financially defensible.
+
+\paragraph{The Chinchilla correction (Hoffmann et al., 2022).} Before this paper, the field
+scaled parameters far faster than data. The finding:
+\begin{itemize}
+\item Most existing models were \textbf{compute-inefficient}: too large for the amount of
+  data they were trained on.
+\item Model size and dataset size should be scaled \textbf{equally}. Given a fixed compute
+  budget, performance improves more by balancing the two than by inflating the model.
+\item \textbf{Doubling the training data gives comparable or better gains than doubling model
+  size.}
+\item \textbf{Overparameterised} models --- too many parameters relative to their training
+  data --- underperform smaller models trained on more data.
+\end{itemize}
+
+\paragraph{The evidence.} Chinchilla, at 70 billion parameters, outperformed Gopher, a
+280-billion-parameter predecessor, using the same compute budget spent on more tokens. The
+practical heuristic that followed is roughly 20 training tokens per parameter.
+
+\paragraph{Why this matters beyond training.} A smaller model trained on more data is cheaper
+to \emph{serve}, forever. Training happens once; inference happens billions of times. This is
+the economic reason the industry moved toward smaller, longer-trained models --- and directly
+why LLaMA (7B/13B trained on trillions of tokens) was possible.
+
+\paragraph{What scaling laws cannot tell you.} Which capabilities will appear and when;
+whether the model will be safe, honest or useful; or what happens when high-quality human
+text runs out.
+
+\paragraph{Counterfactual.} \emph{What if the field had kept scaling parameters only, as
+before Chinchilla?} We would have a small number of enormous, undertrained, extremely
+expensive-to-serve models, and no 7B-parameter models good enough to run on a laptop. The
+entire open-weights ecosystem depends on this result.
+
+\section{Part VI: LLaMA and Modern Architectural Refinements}
+
+\subsection{The LLaMA Family}
+
+\paragraph{What it is.} A family of decoder-only LLMs published by Meta AI --- arguably the
+most popular freely available LLM --- spanning several generations and parameter sizes
+(7B, 13B, 34B, 70B and others).
+
+\paragraph{Why it matters.} It demonstrated the Chinchilla lesson in public: comparatively
+small models trained on very large token counts, released with open weights, so that
+academics and small companies could fine-tune state-of-the-art models themselves. It created
+the open LLM ecosystem.
+
+\paragraph{Scale, to give a sense of cost.} LLaMA 2 70B was among the largest LLMs at
+release: trained on roughly 10 TB of text, requiring about 6000 GPUs for 12 days, on the
+order of $10^{24}$ floating-point operations, at a cost around 2 million US dollars.
+
+\paragraph{Architecture at a glance.} LLaMA is the original Transformer decoder with four
+substitutions. Compared side by side with the 2017 architecture:
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Component} & \textbf{Original Transformer} & \textbf{LLaMA} \\
+\hline
+Normalisation & LayerNorm, applied after the residual add (post-norm) &
+RMSNorm, applied to the sub-layer input (pre-norm) \\
+Position information & Sinusoidal encoding added once to the input embeddings &
+Rotary positional encoding (RoPE) applied to Q and K inside every attention layer \\
+Attention & Multi-head attention & Grouped-query attention with a KV cache
+(in the larger LLaMA 2 variants) \\
+Feed-forward & ReLU MLP & SwiGLU gated MLP \\
+\end{tabularx}
+\end{center}
+
+\subsection{Normalisation, and RMSNorm}
+
+\paragraph{Why normalise at all?} As signals pass through many layers, their scale drifts;
+activations can grow or shrink until gradients explode or vanish. Normalisation rescales
+each layer's activations into a stable range, which permits higher learning rates, reduces
+sensitivity to initialisation, smooths the loss landscape, and shortens training time
+considerably.
+
+\paragraph{LayerNorm.} Subtract the mean and divide by the standard deviation across the
+feature dimension, then apply learned gain $\gamma$ and bias $\beta$:
+\[
+\mathrm{LN}(x) = \gamma \odot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta .
+\]
+
+\paragraph{RMSNorm.} Drop the mean subtraction and the bias; rescale by the root mean square
+only:
+\[
+\mathrm{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}} .
+\]
+
+\paragraph{Why the simplification works.} Empirically, the benefit of LayerNorm comes almost
+entirely from \emph{rescaling}, not from \emph{recentring}. Removing the mean computation
+removes one pass over the vector and several operations per token, giving a measurable
+speed-up (commonly cited around 7--15\% of training time) at essentially no quality cost. At
+LLaMA's scale, a few percent is worth many GPU-days.
+
+\paragraph{Counterfactual.} \emph{What if LLaMA had kept post-norm LayerNorm?} Training very
+deep stacks would require careful learning-rate warm-up and would be more prone to
+divergence, and each step would be slightly slower. Pre-norm keeps an unobstructed residual
+path from input to output, which is what makes 80-layer models trainable.
+
+\subsection{Positional Encoding, Revisited: Absolute, Relative and Rotary}
+
+\paragraph{Absolute (original Transformer).} Add a vector that encodes ``I am token 7''. The
+model must infer relative distance from the difference of two absolute encodings. It also
+does not extrapolate well past the trained length.
+
+\paragraph{Relative (Shaw et al.).} Inject a learned embedding of the \emph{offset} $i - j$
+directly into the attention score computation. Linguistically this is the right quantity ---
+what matters is that the adjective is two words before the noun, not that it is at absolute
+position 41. The drawback is extra computation and memory inside every attention operation.
+
+\paragraph{Rotary positional encoding (RoPE), used by LLaMA.} Do not \emph{add} anything.
+\emph{Rotate} the query and key vectors by an angle proportional to their position, treating
+consecutive pairs of dimensions as points in a 2-D plane:
+\[
+q_m' = R_m q_m, \qquad k_n' = R_n k_n, \qquad
+q_m'^\top k_n' = q_m^\top R_{n-m} k_n .
+\]
+The crucial property: because rotations compose, the dot product of a rotated query and a
+rotated key depends only on the \emph{difference} $n - m$. So an absolute-style operation
+produces relative-position behaviour for free.
+
+\paragraph{Why it is the modern default.}
+\begin{itemize}
+\item Gives relative position information at close to zero extra cost, with no added
+  parameters.
+\item Attention naturally decays with distance, a useful inductive bias.
+\item Applied to Q and K at every layer, not just once at the input, so position information
+  does not fade with depth.
+\item Extends to longer contexts by interpolating or rescaling the rotation frequencies ---
+  the standard trick behind long-context fine-tuning.
+\end{itemize}
+
+\paragraph{Counterfactual.} \emph{What if RoPE rotated the value vectors as well?} The output
+would become position-dependent in an uncontrolled way and the clean relative-position
+identity above would break. Rotation is deliberately confined to the matching operation
+(Q and K), not the content being retrieved (V).
+
+\subsection{Multi-Query and Grouped-Query Attention}
+
+\paragraph{The problem it addresses.} Modern GPUs compute far faster than they can move data.
+Arithmetic is cheap; reading memory is expensive. So the bottleneck in \emph{inference} is
+often memory bandwidth, not FLOPs.
+
+\paragraph{Where the memory goes: the KV cache.} During autoregressive generation, the keys
+and values of all previous tokens are cached so they need not be recomputed for each new
+token. With multi-head attention, each of $h$ heads stores its own K and V for every position.
+For a long conversation this cache becomes gigabytes, and it must be read from memory for
+every single generated token.
+
+\paragraph{The spectrum of solutions.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Scheme} & \textbf{Key/value heads} & \textbf{Effect} \\
+\hline
+Multi-head attention (MHA) & One K/V pair per query head & Best quality, largest cache \\
+Multi-query attention (MQA) & A single K/V pair shared by all query heads & Smallest cache,
+fastest, some quality loss \\
+Grouped-query attention (GQA) & Query heads are split into groups; one K/V pair per group &
+Near-MHA quality at close to MQA speed \\
+\end{tabularx}
+\end{center}
+Queries stay fully multi-headed in all three; only the keys and values are shared.
+
+\paragraph{Why it works.} The expressive power of attention lives mostly in having many
+different \emph{queries} --- many different questions being asked. Having many distinct
+\emph{keys and values} matters less. GQA exploits that asymmetry.
+
+\paragraph{Important correction.} The lecture slides list grouped multi-query attention among
+``LLaMA 1 new concepts''. In the published papers, LLaMA 1 used standard multi-head
+attention; GQA was introduced in \textbf{LLaMA 2}, and only in the 34B and 70B variants
+(7B and 13B kept MHA). Know both the slide claim and the correct attribution.
+
+\paragraph{Counterfactual.} \emph{What if we shared the queries instead of the keys and
+values?} All heads would ask the same question of different content, which destroys the
+entire point of multi-head attention, and it would not shrink the KV cache at all --- queries
+are not cached, since they are recomputed for the current token only.
+
+\subsection{SwiGLU}
+
+\paragraph{What it is.} A gated feed-forward layer that replaces the ReLU MLP:
+\[
+\mathrm{SwiGLU}(x) = \big(\mathrm{Swish}(xW_1) \odot xW_3\big)W_2,
+\qquad \mathrm{Swish}(z) = z \cdot \sigma(z).
+\]
+
+\paragraph{The idea, plainly.} A ReLU MLP applies one nonlinearity and passes the result on.
+SwiGLU computes two projections: one becomes a smooth \emph{gate} and the other the
+\emph{content}, and they are multiplied elementwise. It is the same gating intuition as the
+LSTM --- let the network decide, per feature and per token, how much signal to let through
+--- applied inside the feed-forward block.
+
+\paragraph{Practical details.} It uses three weight matrices instead of two, so to keep the
+parameter count unchanged the hidden dimension is reduced to about $\frac{2}{3}$ of the usual
+$4 d_{\text{model}}$. Swish is smooth and non-monotonic, unlike ReLU, which avoids the ``dead
+neuron'' problem where a unit stuck in the negative region receives zero gradient forever.
+
+\paragraph{Honest caveat.} The original paper introducing GLU variants attributes their
+success to ``divine benevolence'' --- that is, they work reliably in practice but there is no
+crisp theoretical reason. Saying this in an exam is better than inventing a justification.
+
+\subsection{Long Context Models}
+
+\paragraph{Definition.} The context window (or context length) of an LLM is the amount of
+text, in tokens, that the model can consider or ``remember'' at any one time.
+
+\paragraph{The trajectory.} 4K (GPT-3) $\rightarrow$ 128K (GPT-4 Turbo) $\rightarrow$ 1M+
+(Gemini 1.5).
+
+\paragraph{Why it matters.} Whole-book analysis, entire codebases, long legal contracts,
+extended multi-turn conversations, and RAG pipelines that can afford to retrieve generously.
+
+\paragraph{Limitations.}
+\begin{itemize}
+\item \textbf{``Lost in the middle.''} Retrieval accuracy is high for material at the
+  beginning and end of the context and drops sharply for material in the middle. A large
+  window does not guarantee the model uses all of it.
+\item \textbf{Quadratic attention cost.} Doubling context quadruples attention compute and
+  memory. FlashAttention reduces the memory cost by never materialising the full $n \times n$
+  matrix (not covered in this course), but the asymptotic compute cost remains.
+\item Cost and latency scale with context, so a long prompt is expensive on every call.
+\item Quality within the window can degrade even when the model does not error.
+\end{itemize}
+
+\paragraph{Use it when.} The task genuinely requires global reasoning over a document.
+\paragraph{Do not use it when.} You only need a few relevant passages --- RAG is cheaper,
+more current and more auditable than stuffing everything into context.
+
+\subsection{Mixture of Experts (MoE)}
+
+\paragraph{Core idea.} Replace the single feed-forward block in each layer with many parallel
+``expert'' feed-forward sub-networks, and use a small learned \emph{router} to send each token
+to only a few of them. Most parameters exist but stay dormant for any given token.
+
+\paragraph{The canonical example.} Mixtral 8x7B: 8 experts, each about 7B, totalling 47B
+parameters --- not 56B, because only the feed-forward layers are expert-specific; token
+embeddings, attention layers and so on are shared across experts. Only 2 experts are active
+per token, so roughly 13B parameters are used per forward pass. Other examples: DeepSeek-V3
+(256 experts, 8 active) and Qwen 2.5-MoE.
+
+\paragraph{The trade it makes.} Decouples \emph{capacity} (total parameters, i.e. how much the
+model can know) from \emph{compute} (active parameters, i.e. how much it costs to run a
+token). You get the knowledge of a 47B model at roughly the inference cost of a 13B model.
+
+\paragraph{Advantages.} Far better quality per FLOP; faster training and inference for a given
+knowledge capacity; natural specialisation among experts.
+
+\paragraph{Disadvantages.}
+\begin{itemize}
+\item \textbf{All} parameters must still fit in memory, even the inactive ones --- so VRAM
+  requirements follow the 47B, not the 13B.
+\item Training is unstable: routers collapse toward a few favourite experts unless an
+  auxiliary load-balancing loss is added.
+\item Complex to serve efficiently, especially across multiple GPUs.
+\item Fine-tuning is harder and more prone to overfitting.
+\end{itemize}
+
+\paragraph{Use it when.} You are compute-bound at inference but have plenty of memory, and you
+want maximum capability per FLOP.
+\paragraph{Do not use it when.} Memory is the binding constraint (edge devices), or you need a
+simple, easily fine-tuned model.
+
+\paragraph{Counterfactual.} \emph{What if the router were random instead of learned?} Experts
+would never specialise; you would effectively be training an ensemble of identical average
+models and the capacity advantage would vanish. Conversely, \emph{what if we removed the
+load-balancing loss?} The router would send nearly all tokens to a handful of experts, the
+rest would be starved of gradient, and the effective model would shrink to those few ---
+``expert collapse''.
+
+\section{Part VII: Faster, Cheaper, Deployable Models}
+
+The four techniques in this part answer one question: the pretrained model is excellent but
+too large to fine-tune or serve. What can be removed?
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Technique} & \textbf{What it reduces} & \textbf{What stays the same} \\
+\hline
+Quantization & Bits per weight & Architecture, parameter count \\
+PEFT / LoRA & Trainable parameters & Model size at inference \\
+Pruning & Number of weights or structures & Precision of what remains \\
+Distillation & The whole model (new, smaller one) & Nothing --- it is a different model \\
+\end{tabularx}
+\end{center}
+
+\subsection{Quantization}
+
+\paragraph{What it is.} A technique to reduce the computational and memory cost of inference
+by representing weights and activations with low-precision data types, such as 8-bit integers
+(int8), instead of the usual 32-bit floating point (float32).
+
+\paragraph{Why fewer bits helps.} The model needs less memory storage; it consumes less energy
+(in theory); and operations such as matrix multiplication run much faster with integer
+arithmetic. In practice, memory bandwidth is the main win: a 4-bit model moves one eighth as
+many bytes per token as a float32 model.
+
+\paragraph{Two regimes.}
+\begin{itemize}
+\item \textbf{Post-training quantization (PTQ).} Quantize an already-trained model. No
+  retraining, so it is fast and cheap; accuracy may drop.
+\item \textbf{Quantization-aware training (QAT).} Simulate quantization during training ---
+  the forward pass uses quantized values while the backward pass keeps full precision.
+  Recovers more accuracy, but requires a training run.
+\end{itemize}
+
+\paragraph{Common data types and accumulation types.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Storage type} & \textbf{Accumulation type} \\
+\hline
+float16 & float16 \\
+bfloat16 & float32 \\
+int16 & int32 \\
+int8 & int32 \\
+\end{tabularx}
+\end{center}
+The \textbf{accumulation data type} specifies the type of the result of accumulating (adding,
+multiplying) values of the storage type. Example: two int8 values $A = 127$ and $B = 127$;
+their sum $C = 254$ far exceeds the largest representable int8 value. Without a wider
+accumulator, the result would overflow and the precision loss would make the whole
+quantization pointless.
+
+\paragraph{Case 1: float32 $\rightarrow$ float16.} Straightforward, because both types follow
+the same representation scheme. Two checks are required:
+\begin{itemize}
+\item \emph{Does the hardware support it?} Intel CPUs long supported float16 only as a
+  storage type, converting to float32 for computation; full support arrived with Cooper Lake
+  and Sapphire Rapids.
+\item \emph{Is the operation sensitive to lower precision?} The $\epsilon$ in LayerNorm is
+  typically about $10^{-12}$, but the smallest representable float16 value is about
+  $6 \times 10^{-5}$; the small value underflows to zero and can produce NaNs. The same risk
+  exists at the top of the range for large values. This is exactly why bfloat16 --- which
+  keeps float32's exponent range and sacrifices mantissa bits instead --- became the standard
+  training format.
+\end{itemize}
+
+\paragraph{Case 2: float32 $\rightarrow$ int8.} Only 256 distinct values are representable in
+int8, while float32 spans an enormous range. The task is to project a float range $[a,b]$ onto
+the int8 grid. The \textbf{affine quantization scheme} is
+\[
+x = S\,(x_q - Z), \qquad x_q = \mathrm{round}\!\left(\frac{x}{S} + Z\right),
+\]
+where $x_q$ is the int8 value corresponding to $x$; $S$ is the \emph{scale}, a positive
+float32; and $Z$ is the \emph{zero-point}, the int8 value that maps exactly to float 0.
+Representing zero exactly matters because zero appears everywhere in machine learning
+(padding masks, ReLU outputs, sparse weights); if it were only approximated, error would be
+injected into every padded position.
+
+\paragraph{Advantages.} Large reductions in memory and bandwidth; often 2--4$\times$ faster
+inference; makes large models runnable on consumer hardware; requires no architectural change.
+
+\paragraph{Disadvantages.} Some accuracy loss, which grows sharply below about 4 bits;
+outlier activation values in LLMs are notoriously hard to quantize; hardware support is
+uneven; and quantized models can be harder to fine-tune further.
+
+\paragraph{Use it when.} Deploying under memory or latency constraints, or serving many
+concurrent users.
+\paragraph{Do not use it when.} You are still training or exploring; or accuracy is critical
+and unverified; or your hardware lacks native low-precision kernels, in which case you may get
+the memory saving without the speed-up.
+
+\paragraph{Counterfactual.} \emph{What if we quantized with a scale but no zero-point
+(symmetric quantization)?} The mapping is simpler and slightly faster, and it works well for
+weights, which are roughly symmetric about zero. It works badly for post-ReLU activations,
+which are all non-negative --- half the int8 range would be wasted on values that never occur.
+
+\subsection{Parameter-Efficient Fine-Tuning (PEFT)}
+
+\paragraph{What it is.} A family of methods that freeze most of the pretrained model's
+parameters and layers, and train only a small number of added task-specific parameters. By
+training a small set of parameters and preserving most of the pretrained structure, PEFT saves
+time and computational resources.
+
+\paragraph{Common techniques.}
+\begin{itemize}
+\item \textbf{Adapters.} Insert small bottleneck feed-forward layers between the existing
+  Transformer layers and train only those.
+\item \textbf{LoRA (Low-Rank Adaptation).} Do not modify $W$; learn a low-rank correction
+  $\Delta W = BA$, where $B \in \mathbb{R}^{d \times r}$ and $A \in \mathbb{R}^{r \times k}$
+  with $r \ll d$. The forward pass becomes $h = Wx + BAx$. Training a $4096 \times 4096$ layer
+  with $r = 8$ means training about 65{,}000 parameters instead of 16.8 million.
+\item Prompt/prefix tuning: learn continuous ``virtual tokens'' prepended to the input.
+\end{itemize}
+
+\paragraph{Why low rank is enough.} The hypothesis is that adapting a model to a new task
+requires only a low-dimensional change --- the pretrained model already contains the
+capability, and fine-tuning mostly re-weights what it already knows.
+
+\paragraph{Advantages (as listed in the course).} Increased efficiency; faster time-to-value;
+no catastrophic forgetting; lower risk of overfitting; lower data demands; more accessible AI;
+more flexible AI.
+
+Expanding two of these: \emph{no catastrophic forgetting}, because the base weights are frozen
+and cannot be overwritten; \emph{more flexible}, because LoRA adapters are tiny files
+(megabytes) that can be swapped at serving time, so one base model can serve dozens of tasks.
+With LoRA the adapter can also be merged back into $W$ after training, adding zero inference
+latency.
+
+\paragraph{Disadvantages.} Usually slightly below full fine-tuning on tasks requiring large
+behavioural change; the rank $r$ is another hyperparameter; and unmerged adapters add a small
+serving overhead. Crucially, PEFT does not make the model \emph{smaller} at inference --- the
+full base model must still be loaded.
+
+\paragraph{What it cannot solve.} Teaching the model genuinely new knowledge or a new language
+it never saw in pretraining; PEFT adapts, it does not extend. It also does not help when the
+base model is simply too large for your hardware.
+
+\paragraph{Use it when.} Adapting a large pretrained model to a task or style with limited
+data and one GPU; maintaining many task variants of a single base model.
+\paragraph{Do not use it when.} You need to teach substantial new knowledge (consider
+continued pretraining or RAG); or your model is small enough to fine-tune fully.
+
+\paragraph{Counterfactual.} \emph{What if we set the LoRA rank $r$ equal to the full
+dimension?} $\Delta W$ becomes an unconstrained full-rank matrix and you have simply
+reimplemented full fine-tuning, with all its memory cost and its risk of catastrophic
+forgetting. The constraint \emph{is} the method.
+
+\subsection{Pruning}
+
+\paragraph{The procedure.}
+\begin{enumerate}
+\item Train the model.
+\item Prune --- for example remove 30\% of the network.
+\item Fine-tune to recover accuracy.
+\end{enumerate}
+
+\paragraph{Two kinds.}
+\begin{itemize}
+\item \textbf{Magnitude (unstructured) pruning:} remove individual weights with the smallest
+  absolute values, on the assumption that small weights contribute least. Produces sparse
+  weight matrices with high theoretical compression, but generic hardware cannot exploit
+  irregular sparsity, so the real speed-up is often disappointing.
+\item \textbf{Structured pruning:} remove whole neurons, attention heads or layers. Lower
+  compression per unit of accuracy lost, but the result is a genuinely smaller dense model,
+  which is better for hardware and gives real speed-ups.
+\end{itemize}
+
+\paragraph{The practical difficulty flagged in the lecture.} Recovery fine-tuning is
+necessary, but PEFT may not be strong enough to repair the damage of removing 30\% of the
+network, while a full fine-tune of an LLM is expensive. Pruning large models is therefore
+harder than it sounds, and this is one reason distillation is often preferred at LLM scale.
+
+\paragraph{Counterfactual.} \emph{What if we pruned without the recovery fine-tune?} Accuracy
+would fall sharply. Removing weights disturbs the balance of every downstream layer; the
+remaining weights must be readjusted to compensate. Pruning is best understood as
+``damage then repair'', not simply ``delete''.
+
+\subsection{Knowledge Distillation}
+
+\paragraph{What it is.} Train a small ``student'' model to mimic a large ``teacher'' model.
+
+\paragraph{How it works.}
+\begin{enumerate}
+\item The teacher LLM generates \emph{soft labels} --- full probability distributions --- over
+  a dataset.
+\item The student is trained to match the teacher's output distribution, minimising the KL
+  divergence between the two distributions.
+\end{enumerate}
+
+\paragraph{Why soft labels beat hard labels.} A hard label says only ``this is a cat''. A soft
+distribution says ``85\% cat, 12\% dog, 0.01\% aeroplane'', which encodes the teacher's
+learned similarity structure --- often called \emph{dark knowledge}. The student learns not
+just the answer but the shape of the teacher's uncertainty, so it learns far more per example
+than it would from the hard labels alone.
+
+\paragraph{Examples.} DistilBERT: 40\% smaller, retaining 97\% of BERT's accuracy.
+TinyLlama (1.1B) trained from LLaMA 2 outputs.
+
+\paragraph{Best for.} Creating tiny, fast, specialised models --- for instance an on-device
+chat assistant.
+
+\paragraph{Disadvantages.} Requires running the large teacher over a large dataset (expensive);
+the student inherits the teacher's biases and errors; the student generally cannot exceed the
+teacher; and licensing may forbid distilling from a commercial API.
+
+\paragraph{Counterfactual.} \emph{What if the student were trained on the teacher's hard
+argmax outputs instead of soft distributions?} You would lose the dark knowledge and be back
+to ordinary supervised training on machine-generated labels. Distillation would still help a
+little (the teacher's labels are cleaner than raw web data) but the characteristic efficiency
+of distillation comes from the soft targets.
+
+\section{Part VIII: Instruction Tuning and Alignment}
+
+\subsection{Pretrained Models Are Not Chatbots}
+
+A pretrained LLM is a text \emph{continuer}, not an \emph{assistant}. Ask it ``What is the
+capital of Bangladesh?'' and a plausible continuation is another exam question, because that
+is what usually follows a question on the web. It is not disobedient; it was never trained to
+obey. The remaining stages fix that.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Stage} & \textbf{What it teaches} & \textbf{Data required} \\
+\hline
+Pretraining & Language, facts, reasoning patterns & Trillions of unlabelled tokens \\
+Instruction tuning / SFT & Format: how to follow an instruction & Thousands to millions of
+(instruction, response) pairs \\
+RLHF / DPO & Preference: which of two valid answers humans prefer & Human comparisons of
+model outputs \\
+Constitutional AI & Principles, applied by the model to itself & A written constitution, plus
+model-generated critiques \\
+\end{tabularx}
+\end{center}
+
+\subsection{Instruction Tuning}
+
+\paragraph{What it is.} Fine-tuning an LLM on a labelled dataset of instructional prompts and
+their corresponding outputs, so that it responds to task-specific prompts phrased in natural
+language. It is ordinary supervised learning on (input, output) pairs.
+
+\paragraph{Example.}
+\begin{itemize}
+\item Instruction: What is the sentiment of this review?
+\item Input: The movie was boring and too long.
+\item Output: Negative
+\end{itemize}
+
+\paragraph{Why it works so well.} Training on \emph{many} tasks phrased as instructions
+teaches the general skill ``an instruction is a thing to be obeyed'', which then transfers to
+instructions never seen in training. FLAN (2021) demonstrated this cross-task generalisation.
+
+\paragraph{Result.} The model becomes more user-friendly, more general-purpose, and better
+aligned with human intent --- without changing the architecture at all.
+
+\subsection{Alignment through Supervised Fine-Tuning}
+
+\paragraph{Alignment, defined.} The process of shaping a model's behaviour to be helpful,
+harmless and honest according to human intentions and values.
+
+\paragraph{SFT is the easiest alignment method.}
+\begin{enumerate}
+\item Collect human demonstrations: (prompt, ideal response) pairs.
+\item Fine-tune with standard cross-entropy loss on the responses.
+\item Evaluate on held-out prompts.
+\end{enumerate}
+
+\paragraph{Its ceiling.} SFT teaches \emph{format}, not \emph{preferences}. It can show the
+model what a good answer looks like, but it cannot express that answer A is 30\% better than
+answer B, nor navigate the helpful-versus-harmless trade-off. It is also limited by the
+quality of human writers --- the model imitates demonstrations rather than exceeding them.
+And every demonstration must be written by a person, which is expensive.
+
+\subsection{Reinforcement Learning from Human Feedback (RLHF)}
+
+\paragraph{The pipeline.}
+\begin{enumerate}
+\item \textbf{Collect human preferences.} Show annotators two model responses, A and B, and
+  ask which is better. Comparison is far easier and more reliable for humans than writing an
+  ideal answer or assigning an absolute score.
+\item \textbf{Train a reward model} that predicts the human preference score for a response.
+  This turns sparse human judgement into a dense, automatic signal that can be queried
+  millions of times.
+\item \textbf{Optimise the policy} (the LLM) against the reward model using PPO (Proximal
+  Policy Optimization).
+\end{enumerate}
+
+\paragraph{Why reinforcement learning at all?} Because ``be helpful'' has no ground-truth
+target string to imitate. There is no single correct answer to copy, only better and worse
+ones --- which is exactly the setting RL is designed for.
+
+\paragraph{Assessment.} RLHF is expensive but produces the most helpful models (ChatGPT,
+Claude). However, PPO is notoriously unstable; Direct Preference Optimization (DPO) is more
+practical, because it optimises the same preference objective directly with a supervised-style
+loss, dispensing with the separate reward model and the RL loop.
+
+\paragraph{Disadvantages and failure modes.} Very expensive human annotation; annotator
+disagreement and bias baked in; \emph{reward hacking}, where the model finds outputs the
+reward model scores highly but humans dislike (excessive length, flattery, hedging); and an
+``alignment tax'' --- some raw capability is often lost.
+
+\paragraph{Counterfactual.} \emph{What if we optimised the reward model without a KL penalty
+keeping the policy near the SFT model?} The policy would drift far from natural language and
+exploit the reward model's blind spots, producing degenerate text that scores highly and reads
+as nonsense. The KL constraint is what keeps RLHF anchored to fluent output.
+
+\subsection{Constitutional AI}
+
+\paragraph{What it is.} A method developed by Anthropic to train and align models to be
+helpful, honest and harmless --- the three pillars of alignment --- without relying on humans
+to manually review and score thousands of toxic or dangerous outputs.
+
+\paragraph{How it works.} The model is given a written ``constitution'': a set of principles,
+rules and guidelines. It then uses that constitution to critique and revise its own outputs.
+The loop runs: constitution $\rightarrow$ red-teaming $\rightarrow$ self-critique $\rightarrow$
+self-revision $\rightarrow$ supervised or reinforcement learning from the resulting feedback.
+
+\paragraph{Advantages.} Dramatically reduces dependency on human-generated data; scales far
+better; makes the values \emph{explicit and auditable} as a written document rather than
+implicit in thousands of annotator judgements; and spares human workers from repeated exposure
+to harmful content.
+
+\paragraph{Disadvantages.} Someone must still write the constitution, so the value judgements
+merely move upstream; the model may misinterpret abstract principles; and self-critique is
+bounded by the model's own understanding --- it cannot catch a flaw it cannot recognise.
+
+\section{Part IX: Using LLMs}
+
+\subsection{In-Context Learning}
+
+\paragraph{What it is.} Learning from examples provided in the prompt, with no weight updates.
+Provide one example (one-shot) or a few (few-shot). Few-shot often beats zero-shot by a
+significant margin.
+
+\paragraph{Advantages.} Zero training cost; instant adaptability; no ML infrastructure needed;
+you can change the ``task'' between two consecutive API calls.
+
+\paragraph{Why does it work at all?} Nothing is being learned in the usual sense --- no
+parameter changes. The leading explanation is that a sufficiently diverse pretraining corpus
+contains countless implicit task demonstrations, so the model has learned to recognise and
+continue patterns; the prompt's examples \emph{locate} an ability the model already has rather
+than installing a new one. A related view is that the forward pass through attention performs
+something functionally similar to a small gradient-descent-like update inside the activations.
+Treat both as hypotheses, not settled fact.
+
+\paragraph{Disadvantages.} Examples consume context on every call, so it is expensive at scale;
+performance is sensitive to example choice, order and formatting; and it cannot match
+fine-tuning when thousands of labelled examples exist.
+
+\paragraph{Use it when.} Prototyping, few labelled examples, rapidly changing requirements.
+\paragraph{Do not use it when.} High volume with stable requirements and abundant labels ---
+fine-tune or distil instead, and stop paying for the examples on every request.
+
+\subsection{Prompt Design}
+
+\begin{itemize}
+\item \textbf{Role prompting:} ``You are a professional data scientist\ldots''
+\item \textbf{Structured prompting:} ``Step 1: Analyze. Step 2: Propose. Step 3: Conclude.''
+\item \textbf{Delimiters:} use \verb|###| or triple quotes to separate instructions from input.
+  This also mitigates prompt injection, since the model can tell data from commands.
+\item \textbf{Output formatting:} ``Respond with JSON: \{"answer": ...\}''
+\item \textbf{In-context examples:} one-shot or few-shot.
+\item \textbf{Negative constraints:} ``Do not include any conversational filler\ldots''
+\item \textbf{Escape hatch:} explicitly permit ``I don't know''. Without it the model's
+  training pressure to produce a fluent continuation encourages fabrication; giving it a
+  licensed way to decline reduces hallucination.
+\end{itemize}
+
+\subsection{Chain-of-Thought (CoT) Prompting}
+
+\paragraph{What it is.} Asking the model not only to answer but also to generate a rationale
+--- the reasoning steps by which it arrived at the answer.
+
+\paragraph{Effect.} CoT significantly enhances performance on arithmetic, symbolic and other
+logical reasoning tasks, including in the zero-shot case (``Let's think step by step'').
+
+\paragraph{Why does it work?} Two complementary reasons, and the exam will want both:
+\begin{enumerate}
+\item \textbf{Computational.} A Transformer performs a fixed amount of computation per
+  generated token. A hard problem may need more computation than one forward pass provides.
+  Writing intermediate steps lets the model spend many forward passes on one problem --- the
+  generated tokens act as an external working memory.
+\item \textbf{Distributional.} Correct reasoning chains in the training corpus are usually
+  followed by correct answers. Conditioning on a well-formed chain of reasoning shifts the
+  model into a region of its distribution where correct answers are far more likely.
+\end{enumerate}
+
+\paragraph{Limitations.} It costs many extra tokens (latency and money); the stated rationale
+is not guaranteed to be the actual cause of the answer, so it is a poor faithfulness guarantee
+--- a model can produce a flawless-looking chain and a wrong answer, or the reverse; it mainly
+helps large models, and can hurt small ones; and it does not help on tasks with no decomposable
+structure.
+
+\subsection{The Problem with Pure LLMs}
+
+\begin{itemize}
+\item \textbf{Hallucinations} --- fluent, confident, false statements.
+\item \textbf{Outdated knowledge} --- frozen at the training cut-off.
+\item \textbf{No access to private data} --- it never saw your company's documents.
+\item \textbf{Expensive to retrain} --- you cannot re-pretrain a model every time a fact
+  changes.
+\end{itemize}
+Solution: do not retrain. Give the LLM a retriever.
+
+\subsection{Retrieval-Augmented Generation (RAG)}
+
+\paragraph{What it is.} An architecture combining a \textbf{retriever}, which finds relevant
+documents in a knowledge base, with a \textbf{generator}, which produces an answer conditioned
+on those documents.
+
+\paragraph{The retriever (the ``search engine'').}
+\begin{itemize}
+\item Convert documents into vector embeddings.
+\item Store them in a vector database (Pinecone, Weaviate, FAISS).
+\item At query time, embed the question and find the top-$k$ most similar documents.
+\end{itemize}
+Vector search matters because it matches on \emph{meaning}: a query about ``annual leave''
+retrieves a passage about ``vacation policy'' even with no shared keywords.
+
+\paragraph{The generator (the LLM).}
+\begin{itemize}
+\item Takes [retrieved documents] + [user query] + [instructions].
+\item Generates an answer conditioned only on the retrieved context.
+\item Can be any LLM. Notably, small LLMs (around 7B) work surprisingly well as generators
+  when retrieval is good --- because the hard part becomes reading, not recalling.
+\end{itemize}
+
+\paragraph{Use cases.} Open-domain question answering; chatbots that must be factually
+accurate; enterprise Q\&A over internal documents; keeping responses current without
+retraining.
+
+\paragraph{Advantages.} Knowledge updates instantly by editing the document store; sources can
+be cited, so answers are auditable; private data never enters model weights; and it works with
+a smaller, cheaper generator.
+
+\paragraph{Disadvantages.} The whole system is capped by retrieval quality --- if the right
+passage is not retrieved, the answer will be wrong; added latency and infrastructure;
+chunking strategy matters a great deal; and the model may still ignore or contradict the
+retrieved context.
+
+\paragraph{RAG versus fine-tuning.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Dimension} & \textbf{RAG} & \textbf{Fine-tuning} \\
+\hline
+Knowledge freshness & Immediate --- update the index & Stale --- requires retraining \\
+Transparency & High --- the retrieved sources can be shown & Low --- knowledge is diffused
+into weights \\
+Compute cost & Low up-front, higher per query (longer prompts) & High up-front, cheaper per
+query \\
+Hallucination risk & Lower, because answers are grounded in retrieved text & Unchanged or
+worse; fine-tuning on facts can teach confident invention \\
+Best at teaching & \emph{Knowledge} --- what to say & \emph{Behaviour} --- how to say it
+(style, format, tone) \\
+\end{tabularx}
+\end{center}
+
+\paragraph{The classwork question, answered.} \emph{You need a model that imitates the writing
+style of a particular newspaper while also being factual --- which solution?} Both, and the
+split follows the last row of the table. Fine-tune (or LoRA) on that newspaper's archive to
+acquire its \emph{style}; use RAG to supply the \emph{facts} for each specific article. Style
+is behaviour, so it belongs in the weights; facts are knowledge, so they belong in the context.
+Fine-tuning alone would produce a model that writes beautifully in house style and invents its
+facts.
+
+\subsection{Reasoning Models and Agentic AI}
+
+\paragraph{Standard LLMs are ``System 1'' thinkers.} Fast, automatic, pattern-matching; one
+forward pass yields one answer; autoregressive, with no ability to backtrack, revise or plan.
+Consequently they often fail at multi-step mathematics, logic puzzles, planning and
+self-correction.
+
+\paragraph{Reasoning LLMs.} A reasoning model is an LLM fine-tuned to break complex problems
+into smaller steps --- often called \emph{reasoning traces} --- before producing a final
+output. The distinction to hold onto is \emph{pattern matching versus deliberate reasoning}.
+CoT prompting asks for this behaviour at inference time; a reasoning model has been trained to
+do it natively, typically with reinforcement learning against verifiable answers. Reasoning
+LLMs play a critical role in agentic AI.
+
+\paragraph{The agent loop.} At each iteration the agent assembles context from the available
+inputs, invokes an LLM to reason and select an action, executes that action, observes the
+outcome, and feeds the observation back into the next iteration. The loop repeats until the
+task is complete or a stopping condition is reached.
+
+\paragraph{Why the loop is the key idea.} It converts a one-shot text generator into a system
+that can act, observe consequences and correct itself. The model gains a feedback signal from
+the world, which is exactly what a single forward pass lacks.
+
+\paragraph{Convergence.} Every major AI organisation has converged on the same execution
+pattern, summarised by Lilian Weng as
+\[
+\text{Agent} = \text{LLM} + \text{Memory} + \text{Planning} + \text{Tool Use}.
+\]
+Memory supplies persistence beyond the context window; planning decomposes the goal; tool use
+provides grounding (search, code execution, databases, APIs). The Model Context Protocol (MCP)
+standardises how tools are exposed to models, so that any tool can be plugged into any agent
+without bespoke integration.
+
+\paragraph{Disadvantages.} Errors compound across iterations; loops can run away in cost;
+tool-calling introduces security concerns such as prompt injection; and evaluation is very
+hard, because success is defined over a whole trajectory rather than a single output.
+
+\section{Part X: Evaluation and Responsibility}
+\label{sec:eval}
+
+\subsection{Why Evaluating LLMs Is Hard}
+
+\begin{itemize}
+\item Generative models produce open-ended responses, so correctness is often \textbf{subjective}
+  --- there is no single reference answer to compare against.
+\item Alignment is subjective as well: how helpful a model is depends on the user.
+\item \textbf{Benchmark contamination:} massively trained LLMs may already have been trained
+  on the very data used to test them, so a high score may measure memorisation rather than
+  ability.
+\end{itemize}
+Add to these that capabilities are unevenly distributed (a model can pass a bar exam and fail
+at counting letters), and that benchmark scores are sensitive to prompt formatting.
+
+\subsection{Common Benchmarks}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Benchmark} & \textbf{What it measures} \\
+\hline
+MMLU & Multitask accuracy across 57 subject areas \\
+HumanEval & Code generation \\
+BIG-Bench & Diverse reasoning tasks \\
+GSM8K & Grade-school mathematics word problems \\
+MT-Bench & Multi-turn conversation and reasoning \\
+\end{tabularx}
+\end{center}
+Benchmarks are useful but not sufficient. They are cheap, comparable and reproducible; they
+are also gameable, contaminated over time, and silent about the qualities users actually care
+about.
+
+\subsection{LLM-as-a-Judge}
+
+Extremely popular at present: if prompted properly, a strong LLM scoring another model's
+output is a scalable, flexible and surprisingly accurate alternative to human evaluation.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{YY}
+\textbf{Advantages} & \textbf{Disadvantages} \\
+\hline
+Fast and scalable & Verbosity bias --- longer answers are scored higher \\
+Aligns reasonably well with human preferences & Egocentric bias --- a judge prefers text
+resembling its own output \\
+Flexible --- any criterion can be written into the rubric & Cost --- an extra model call per
+evaluation \\
+Consistent --- no annotator fatigue or drift & Ordering bias --- position of A and B affects
+the verdict \\
+Explainable --- the judge can state its reasons & Trustworthiness --- the stated reasons may
+not be the real ones \\
+\end{tabularx}
+\end{center}
+Practical mitigations: swap the order of candidates and average; use a fixed rubric; and
+calibrate the judge against a human-scored sample.
+
+\subsection{Human Evaluation}
+
+The gold standard, but expensive. For some qualities --- humour, empathy, tone --- it may be
+the only valid method. It is also inconsistent and subjective across annotators, and scaling
+it is a nightmare. In practice the field uses a pyramid: automatic benchmarks for fast
+iteration, LLM-as-judge for breadth, human evaluation for final decisions.
+
+\subsection{Responsible LLMs}
+
+\begin{itemize}
+\item \textbf{Hallucinations.} Fluency is optimised, truth is not. Mitigations: RAG,
+  citations, escape hatches, calibration, human review for high-stakes use.
+\item \textbf{Bias and fairness.} Models reproduce and can amplify the distribution of their
+  training data --- gender, race, religion, language and geography. Mitigations: data
+  auditing, targeted evaluation, alignment training. Note that debiasing is itself a value
+  judgement about which distribution is correct.
+\item \textbf{Privacy and intellectual property.} Training data may contain personal
+  information and copyrighted work; models can memorise and regurgitate rare strings; and the
+  legal status of training on scraped text remains contested.
+\item \textbf{Safety and security.} Misuse for disinformation, fraud and malware; jailbreaks
+  and prompt injection; over-reliance by users on confident wrong answers; and, in agentic
+  settings, real actions taken in the world.
+\end{itemize}
+
+\subsection{Future Directions}
+
+Long-horizon models that maintain coherence over extended tasks; personalised assistants;
+on-device LLMs (which is what Part VII's efficiency methods are ultimately for); stronger
+reasoning; autonomous agents; and alignment and interpretability, so that we can verify what
+these systems are actually doing.
+
+\section{Appendix A: Points Where the Slides Need Care}
+\label{sec:pitfalls}
+
+\begin{enumerate}
+\item \textbf{Grouped-query attention is listed under ``LLaMA 1 new concepts''.} In the
+  published papers, LLaMA 1 used standard multi-head attention. GQA appeared in
+  \textbf{LLaMA 2}, and only in the 34B and 70B variants. If a question asks which LLaMA
+  generation introduced GQA, the correct answer is LLaMA 2.
+\item \textbf{RMSNorm appears in the LLaMA architecture diagram but not in the bulleted list
+  of new concepts,} where the item is simply ``Normalization''. RMSNorm is one of LLaMA's four
+  defining changes and should be named explicitly alongside RoPE, GQA and SwiGLU.
+\item \textbf{GPT-1's parameter count} is given as 120 million in the slides; the paper's
+  configuration is usually reported as about 117 million. Either figure is acceptable; do not
+  build an argument on the difference.
+\end{enumerate}
+
+\section{Appendix B: One-Page Comparison Tables}
+
+\subsection{Recurrent versus Attention-Based}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lYYY}
+\textbf{Property} & \textbf{Simple RNN} & \textbf{LSTM / GRU} & \textbf{Transformer} \\
+\hline
+Path length between distant tokens & $O(n)$ & $O(n)$ & $O(1)$ \\
+Parallel over positions & No & No & Yes \\
+Compute per layer & $O(n \cdot d^2)$ & $O(n \cdot d^2)$ & $O(n^2 d + n d^2)$ \\
+Long-range dependencies & Poor & Moderate & Strong \\
+Memory of past & One vector & Cell state plus hidden state & Full context, re-read each step \\
+Inductive bias & Strong (recency) & Strong (recency, gated) & Weak --- needs much more data \\
+Best regime & Tiny data, streaming & Small--medium data & Large data plus GPUs \\
+\end{tabularx}
+\end{center}
+
+\subsection{Which Efficiency Method for Which Constraint}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Your constraint} & \textbf{Reach for} \\
+\hline
+Model will not fit in VRAM & Quantization (and, if available, a smaller distilled model) \\
+Cannot afford to fine-tune all parameters & PEFT / LoRA \\
+Need many task variants served from one base & LoRA adapters swapped at serving time \\
+Need a genuinely smaller and faster model & Distillation, or structured pruning \\
+Need more knowledge capacity at fixed FLOPs & Mixture of Experts \\
+Need current or private facts & RAG (not fine-tuning) \\
+Need a particular style or format & Fine-tuning (not RAG) \\
+\end{tabularx}
+\end{center}
+
+\section{Appendix C: Rapid Revision Questions}
+
+\begin{enumerate}
+\item \textbf{Why does the LSTM solve the vanishing gradient problem?} Because the cell state
+  update is additive, $C_t = f_t \odot C_{t-1} + i_t \odot \tilde C_t$, so the gradient through
+  time is multiplied by the forget gate rather than by a chain of $\tanh$ derivatives. With
+  $f_t \approx 1$ the gradient passes back nearly unchanged.
+
+\item \textbf{Why divide by $\sqrt{d_k}$ in attention?} Dot products of high-dimensional
+  vectors have large variance; large logits saturate the softmax, whose gradient then vanishes.
+  Scaling keeps logits in a range where softmax remains trainable.
+
+\item \textbf{Why does a Transformer need positional encoding when an RNN does not?}
+  Self-attention is permutation-invariant --- it treats the input as a set. An RNN encodes
+  order implicitly through the sequential order of its updates.
+
+\item \textbf{Why can BERT not generate text?} It is an encoder trained with bidirectional
+  attention. Any position can see every other, so there is no way to define a next-token
+  prediction that does not leak the answer, and there is no autoregressive decoder.
+
+\item \textbf{Why does BERT use 80/10/10 masking?} \texttt{[MASK]} never occurs at fine-tuning
+  time, so training on 100\% \texttt{[MASK]} creates a pretrain/fine-tune mismatch. Random and
+  unchanged tokens force good representations of ordinary tokens too, which matters most in the
+  frozen feature-extraction setting.
+
+\item \textbf{What is the single most important claim of the Chinchilla paper?} For a fixed
+  compute budget, model size and training data should scale equally; most prior models were
+  too large for their data, and doubling data helps at least as much as doubling parameters.
+
+\item \textbf{Why did GQA appear?} GPUs compute much faster than they move memory, so
+  autoregressive inference is bandwidth-bound, and the KV cache dominates that bandwidth.
+  Sharing keys and values across groups of query heads shrinks the cache with little quality
+  loss.
+
+\item \textbf{Why is RoPE preferred over sinusoidal encoding?} It encodes relative position
+  through rotation, so attention scores depend only on the offset between positions; it is
+  applied inside every layer rather than once at the input; it adds no parameters; and it can
+  be extended to longer contexts by rescaling frequencies.
+
+\item \textbf{What does a MoE model buy you?} Knowledge capacity decoupled from per-token
+  compute: many parameters exist, few are active. The cost is that all of them must still be
+  held in memory, plus routing instability.
+
+\item \textbf{Difference between quantization, pruning, PEFT and distillation?} Quantization
+  reduces the precision of weights; pruning removes weights or structures; PEFT reduces the
+  number of \emph{trainable} weights without shrinking the model; distillation trains a new,
+  smaller model to imitate a large one.
+
+\item \textbf{Why RLHF rather than more supervised fine-tuning?} SFT can only imitate
+  demonstrations, so it teaches format, not preference, and cannot express that one valid answer
+  is better than another. Preference comparisons are easier for humans to give and support
+  optimisation beyond what any demonstrator wrote.
+
+\item \textbf{RAG or fine-tuning?} RAG for knowledge that is fresh, private, large or must be
+  cited; fine-tuning for behaviour --- style, format, tone, task-specific output structure.
+  Combine them when you need both.
+
+\item \textbf{Why does chain-of-thought help?} It gives the model more computation for a hard
+  problem (each generated token is another forward pass, and the text acts as working memory)
+  and conditions it on the kind of context that, in the training distribution, precedes correct
+  answers.
+
+\item \textbf{What is the biggest weakness of long-context models?} They do not use the whole
+  window equally --- the ``lost in the middle'' effect --- and attention cost grows
+  quadratically with length.
+
+\item \textbf{Name the four architectural differences between LLaMA and the original
+  Transformer decoder.} Pre-norm RMSNorm instead of post-norm LayerNorm; rotary positional
+  encoding instead of sinusoidal; grouped-query attention with a KV cache instead of plain
+  multi-head attention (LLaMA 2, larger variants); and a SwiGLU gated feed-forward network
+  instead of a ReLU MLP.
+\end{enumerate}
+
+\end{document}
