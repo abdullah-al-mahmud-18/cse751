@@ -106,6 +106,124 @@ length, the model could never process a sequence longer than the longest one it 
 for, and a pattern learned at position 3 would not transfer to position 30. Weight sharing
 is not an optimisation detail --- it is the entire reason an RNN generalises over sequences.
 
+\subsection{How the Input Is Represented, and How Big Each Matrix Is}
+
+\paragraph{The input layer size is set by the word representation, not the sentence length.}
+This trips people up. In a feed-forward network on tabular data, the input layer has one
+neuron per column. In an RNN, the number of words decides the number of \emph{time steps};
+the input layer size is decided by how a single word is written down as numbers:
+\begin{itemize}
+\item \textbf{One-hot encoding:} a vocabulary of 30 words gives a 30-dimensional input
+  vector --- all zeros with a single 1 in the slot for that word. So 30 input neurons.
+\item \textbf{Word embeddings:} each word is squashed into a dense vector of, say, 300
+  numbers. So 300 input neurons. This is what modern systems use.
+\end{itemize}
+A 5-word sentence and a 50-word sentence both use the same input layer; the longer one just
+runs the loop more times.
+
+\paragraph{The three matrices, in plain words.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Matrix} & \textbf{Its job, in one question} & \textbf{Connects} \\
+\hline
+$W$ & ``How do I read a new word?'' & input $\rightarrow$ hidden state \\
+$U$ & ``How much do I trust my old notes?'' & old hidden state $\rightarrow$ new hidden state \\
+$V$ & ``How do I turn my notes into an answer?'' & hidden state $\rightarrow$ output \\
+\end{tabularx}
+\end{center}
+They are three separate matrices because they are three genuinely different jobs, each
+needing its own learned behaviour. Squashing them into one matrix would force the model to
+read a word and recall its memory using the same weights.
+
+\paragraph{Shapes, with concrete numbers.} Take vocabulary $=30$, hidden size $=5$, output
+classes $=3$. The matrix-multiplication rule is that
+$[a \times b] \cdot [b \times 1] = [a \times 1]$, so:
+\begin{itemize}
+\item $W x^{(t)}$ must give $[5\times1]$ from a $[30\times1]$ input, so $W$ is $[5 \times 30]$.
+\item $U h^{(t-1)}$ must give $[5\times1]$ from a $[5\times1]$ state, so $U$ is $[5 \times 5]$.
+\item $V h^{(t)}$ must give $[3\times1]$ from a $[5\times1]$ state, so $V$ is $[3 \times 5]$.
+\end{itemize}
+Total: $150 + 25 + 15 = 190$ parameters. Remember this number --- the LSTM comparison below
+uses it.
+
+\paragraph{Why $U$ is always square.} $U$ takes the hidden state in and must produce something
+the same size, because that output becomes the next hidden state and will be fed through $U$
+again. Any other shape breaks the loop after one step.
+
+\paragraph{The hidden state is not a learned parameter.} $h$ is \emph{recomputed} at every
+step of every sequence. It starts at the zero vector (empty memory), is rebuilt at each step,
+and is thrown away when the sequence ends. What gets learned is $W$, $U$, $V$ --- never $h$.
+
+\paragraph{When does the output layer fire?} It depends on the task shape. In a many-to-one
+task (sentiment), steps 1--4 only update memory and the output layer stays silent; the
+prediction is made at step 5. In a many-to-many task (POS tagging), an output is produced at
+every step.
+
+\paragraph{Why weights are updated after the \emph{whole} sequence, not after each word.}
+Two reasons, and they reinforce each other. First, $W$, $U$, $V$ are shared across all steps,
+so the same weight is partly responsible for the error at step 1 and the error at step 5.
+Second, the loss at step 3 was partly caused by weights acting at steps 1 and 2, because
+$h_1$ flows into $h_2$ flows into $h_3$. You cannot assign blame fairly without the total
+loss over the full sequence. Contrast a feed-forward network on tabular data, where rows are
+independent and weights are not shared, so an update after every row is perfectly sensible.
+
+\subsection{Worked Example: A Vanilla RNN Tagging ``the hair dryer is great''}
+
+Nothing here is new mathematics --- it is the same two equations, done with actual numbers so
+the shapes stop being abstract.
+
+\paragraph{Setup.} Five words, five POS classes. One-hot inputs of size 5, hidden size 5,
+output size 5. Tag indices: $0=$DET, $1=$NOUN, $2=$VERB, $3=$ADV, $4=$ADJ. True labels:
+the$\to$0, hair$\to$1, dryer$\to$1, is$\to$2, great$\to$4. To keep the arithmetic clean, set
+$W = \mathbf{I}_5$, $U = 0.5\,\mathbf{I}_5$, $V = 0.5\,\mathbf{I}_5$, $h^{(0)} = \mathbf{0}$.
+Because all three are diagonal, multiplying is just element-wise scaling.
+
+\paragraph{Step 1 --- ``the''.}
+\begin{align*}
+U h^{(0)} + W x^{(1)} &= [0,0,0,0,0] + [1,0,0,0,0] = [1,0,0,0,0] \\
+h^{(1)} &= \tanh([1,0,0,0,0]) = [0.7616,0,0,0,0] \\
+o^{(1)} &= \mathrm{softmax}([0.3808,0,0,0,0]) = [0.2679, 0.1830, 0.1830, 0.1830, 0.1830] \\
+L^{(1)} &= -\log(0.2679) = 1.3173 \quad \checkmark \text{ DET is the argmax}
+\end{align*}
+
+\paragraph{Step 2 --- ``hair''.} Now the old state contributes for the first time:
+\begin{align*}
+U h^{(1)} + W x^{(2)} &= [0.3808,0,0,0,0] + [0,1,0,0,0] = [0.3808,1,0,0,0] \\
+h^{(2)} &= [0.3634, 0.7616, 0, 0, 0], \qquad
+o^{(2)} = [0.2118, 0.2584, 0.1766, 0.1766, 0.1766] \\
+L^{(2)} &= -\log(0.2584) = 1.3531 \quad \checkmark \text{ NOUN}
+\end{align*}
+Notice the memory effect: slot 1 (``the'') has faded from $0.7616$ to $0.3634$ without anyone
+deciding to forget it. That automatic, uncontrolled decay is precisely what the LSTM exists
+to replace.
+
+\paragraph{Steps 3--5, in brief.}
+\begin{align*}
+h^{(3)} &= [0.1797, 0.3634, 0.7616, 0, 0], & L^{(3)} &= 1.5687 \ \times \text{ (VERB, true NOUN)} \\
+h^{(4)} &= [0.0896, 0.1797, 0.3634, 0.7616, 0], & L^{(4)} &= 1.5766 \ \times \text{ (ADV, true VERB)} \\
+h^{(5)} &= [0.0448, 0.0896, 0.1797, 0.3634, 0.7616], & L^{(5)} &= 1.3814 \ \checkmark \text{ ADJ}
+\end{align*}
+\[
+L_{\text{total}} = \tfrac{1}{5}(1.3173 + 1.3531 + 1.5687 + 1.5766 + 1.3814) = 1.4394 .
+\]
+
+\paragraph{The backward pass, in outline.} For softmax with cross-entropy the gradient at the
+output is simply $\delta_{\text{out}}^{(t)} = o^{(t)} - y^{(t)}$ --- prediction minus truth.
+For example at step 1, $\delta^{(1)}_{\text{out}} = [-0.7321, 0.1830, 0.1830, 0.1830, 0.1830]$:
+negative on the correct class (push it up), positive elsewhere (push them down). Then, walking
+backwards from $t=5$ to $t=1$:
+\begin{align*}
+\delta_h^{(t)} &= V^\top \delta_{\text{out}}^{(t)}/T + \delta_{h,\text{next}} \\
+\delta_{\text{pre}}^{(t)} &= \delta_h^{(t)} \odot \left(1 - [h^{(t)}]^2\right) && \leftarrow \tanh \text{ derivative} \\
+\nabla W &\mathrel{+}= \delta_{\text{pre}}^{(t)} \otimes x^{(t)}, \qquad
+\nabla U \mathrel{+}= \delta_{\text{pre}}^{(t)} \otimes h^{(t-1)} \\
+\delta_{h,\text{next}} &\leftarrow U^\top \delta_{\text{pre}}^{(t)}
+\end{align*}
+Two things worth memorising from this. First, the gradient of a shared weight is the
+\emph{sum} of its contributions from every time step --- that is what ``shared weights''
+means at update time. Second, the last column of $\nabla U$ comes out all zeros, because
+$h^{(0)} = \mathbf{0}$ and so nothing flows back past the start of the sequence.
+
 \subsection{Backpropagation Through Time and the Vanishing Gradient}
 
 \paragraph{What it is.} BPTT is ordinary backpropagation applied to the RNN after
@@ -177,6 +295,37 @@ already read token $t$. This is exactly why BERT cannot simply be trained left-t
 bidirectionally and instead has to invent \emph{masking} (Section~\ref{sec:bert}). The
 bidirectional/generation tension is a recurring exam theme.
 
+\paragraph{One loss or two?} \textbf{One combined loss.} The two directions each produce a
+hidden state at every position, and both feed a single shared output layer:
+\[
+o^{(t)} = \mathrm{softmax}\!\left(V_f h_f^{(t)} + V_b h_b^{(t)}\right).
+\]
+One prediction per position gives one loss per position gives one total loss. Where the two
+RNNs \emph{do} separate is backpropagation: gradients from that shared loss flow backwards
+independently through the forward RNN (updating $W_f, U_f$) and the backward RNN (updating
+$W_b, U_b$). The two networks never talk to each other during the forward pass either --- they
+run independently and meet only at the combination step.
+
+\paragraph{Why ``bidirectional'' necessarily means two networks.} There is no single RNN that
+can run in both directions at once; the ``bi'' literally means two networks with their own
+weight matrices. This matters architecturally: the moment you want a bidirectional encoder you
+have already committed to multiple components, and since a decoder cannot be bidirectional,
+the encoder--decoder split is not merely an engineering convenience --- it is the structural
+consequence of wanting bidirectional reading alongside unidirectional writing.
+
+\paragraph{Worked comparison on the same sentence.} Running the earlier tagging example
+bidirectionally (same weights, $h_b^{(6)} = \mathbf{0}$ for the backward start) gives at
+position 1:
+\begin{align*}
+V_f h_f^{(1)} + V_b h_b^{(1)} &= [0.3808,0,0,0,0] + [0.3808, 0.1817, 0.0899, 0.0448, 0.0224] \\
+o^{(1)} &= [0.3293, 0.1844, 0.1682, 0.1608, 0.1572], \qquad L^{(1)} = 1.1107
+\end{align*}
+against $1.3173$ for the unidirectional model. Across the sentence,
+$L_{\text{total}} = 1.3602$ versus $1.4394$. Lower, because every word now sees both sides.
+Note also the asymmetry at the edges: $h_b^{(1)}$ (``the'') has read the whole sentence
+backwards, whereas $h_b^{(5)}$ (``great'') has seen only itself --- it was the backward RNN's
+first step.
+
 \section{Part II: Encoder--Decoder and Attention}
 
 \subsection{The Sequence-to-Sequence (Encoder--Decoder) Model}
@@ -240,6 +389,65 @@ not fix the underlying problem, because the vector is still a single fixed-size 
 The real fix has to let the decoder look back at \emph{all} encoder states, which is
 attention.
 
+\paragraph{The three components, written out.}
+\begin{itemize}
+\item \textbf{Encoder:} reads $x_1 \ldots x_n$, updating its hidden state each step. Its
+  final state $h_n^e$ summarises the whole input.
+\item \textbf{Context vector:} $c = h_n^e$. The \emph{only} bridge between the two halves.
+\item \textbf{Decoder:} starts from $h_0^d = c$ and generates autoregressively,
+  \[
+  h_t^d = g(\hat{y}_{t-1},\, h_{t-1}^d,\, c), \qquad
+  z_t = f(h_t^d), \qquad y_t = \mathrm{softmax}(z_t),
+  \]
+  conditioning each step on the previous output token, the previous decoder state, and the
+  context.
+\end{itemize}
+Training minimises cross-entropy averaged over all target tokens,
+$L = \frac{1}{T}\sum_{i=1}^{T} L_i$ with $L_i = -\log P(y_i)$. A separator token
+\texttt{<s>} is placed between source and target when the two are packed into one stream; the
+encoder's outputs are ignored while it reads the source, and generation begins after
+\texttt{<s>}.
+
+\paragraph{What the encoder and decoder actually are, architecturally.} Neither is a vanilla
+RNN in practice.
+\begin{itemize}
+\item The standard \textbf{encoder} is a \emph{stacked bidirectional LSTM}. LSTM because a
+  vanilla RNN cannot reliably encode a long sentence; bidirectional because every source
+  token's representation should see both sides; stacked because lower layers capture surface
+  patterns and higher layers capture abstract meaning. The context vector is taken from the
+  top layer's final state.
+\item The standard \textbf{decoder} is a \emph{stacked unidirectional LSTM}. It keeps the
+  gating and the stacking but \emph{cannot} be bidirectional: at inference the future tokens
+  do not exist yet. It also receives two inputs a plain encoder never handles --- the context
+  $c$ and the previously generated token $\hat{y}_{t-1}$.
+\end{itemize}
+
+\paragraph{Two separate problems, often confused.} The bottleneck (compressing everything
+into one vector) and the vanishing gradient (signal dying over many steps) are different
+failures. LSTMs largely fix the gradient problem. The bottleneck is a \emph{capacity} problem
+and survives untouched --- which is why attention had to be invented on top.
+
+\paragraph{How does the decoder know how many words to produce?} It does not, and it never
+counts. Every target sentence in training is terminated with an end-of-sequence token
+\texttt{</s>}, which lives in the vocabulary like any other word. So the model does not learn
+to produce ``Soy un estudiante'' --- it learns to produce ``Soy un estudiante \texttt{</s>}''.
+At every step the question is always the same (``what is the next token?''), and one of the
+available answers is always \texttt{</s>}. Generation stops the first time \texttt{</s>} wins,
+so a 5-word source can produce a 3-word target with exactly one \texttt{</s>}. Source and
+target lengths are entirely decoupled.
+
+\paragraph{But an LSTM must know how many times to unroll.} Correct, and the resolution is the
+training/inference split:
+\begin{itemize}
+\item \textbf{Training:} the gold target is known, so the decoder unrolls exactly as many
+  steps as the target has tokens (including \texttt{</s>}). A static unroll.
+\item \textbf{Inference:} no gold target exists, so the decoder runs one step at a time,
+  checks whether the output was \texttt{</s>}, and if not feeds it back in and steps again. A
+  dynamic loop.
+\end{itemize}
+This is the same distinction as teacher forcing: having the full target in advance is exactly
+what permits the fixed unroll.
+
 \subsection{Attention}
 
 \paragraph{What it is.} A mechanism that lets the decoder, at each output step, look back
@@ -295,6 +503,101 @@ differentiable, so you would need reinforcement learning or a relaxation to trai
 Soft attention is used almost universally because it is differentiable end-to-end --- a
 good illustration of a design chosen for trainability rather than realism.
 
+\paragraph{The three scoring functions, and why you would pick each.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Score} & \textbf{Formula} & \textbf{Note} \\
+\hline
+Dot product & $h_{i-1}^d \cdot h_j^e$ & No parameters. Requires encoder and decoder hidden
+states to be the \emph{same size}. \\
+Bilinear (Luong) & $h_{i-1}^d\, W_s\, h_j^e$ & $W_s$ is learned end-to-end. It learns
+\emph{which aspects} of similarity matter for the task, and it allows different encoder and
+decoder dimensions. \\
+Additive (Bahdanau) & a small feed-forward net over the pair & Most expressive, most
+expensive. \\
+\end{tabularx}
+\end{center}
+
+\subsection{Worked Example: Computing One Attention Context Vector}
+
+Translating ``The car is very cool'' into Spanish. Five encoder states, 2-dimensional to keep
+the arithmetic visible. The decoder has just finished step 1 with $h_1^d = [0.5, 0.3]$ and is
+about to take step 2.
+
+\begin{center}
+\begin{tabular}{ll}
+\textbf{Word} & \textbf{Encoder state} \\
+\hline
+$h_1^e$ ``The'' & $[0.2, 0.1]$ \\
+$h_2^e$ ``car'' & $[0.9, 0.8]$ \\
+$h_3^e$ ``is'' & $[0.3, 0.4]$ \\
+$h_4^e$ ``very'' & $[0.1, 0.2]$ \\
+$h_5^e$ ``cool'' & $[0.5, 0.6]$ \\
+\end{tabular}
+\end{center}
+
+\paragraph{Step 1 --- score every encoder state against $h_1^d$ (dot product).}
+\[
+0.13,\quad 0.69,\quad 0.27,\quad 0.11,\quad 0.43
+\]
+(For instance $0.5{\times}0.9 + 0.3{\times}0.8 = 0.69$ for ``car''.)
+
+\paragraph{Step 2 --- softmax to get the weights $\alpha_{2j}$.}
+Exponentiating gives $1.139$, $1.994$, $1.310$, $1.116$ and $1.537$, which sum to $7.096$, so
+\[
+\alpha_2 = [\,0.16,\ 0.28,\ 0.18,\ 0.16,\ 0.22\,]
+\quad\text{for}\quad
+(\text{The},\ \text{car},\ \text{is},\ \text{very},\ \text{cool}),
+\]
+which sums to 1. ``car'' wins because its encoder state pointed most nearly in the same
+direction as the decoder's state.
+
+\paragraph{Step 3 --- weighted sum.}
+\[
+c_2 = 0.16[0.2,0.1] + 0.28[0.9,0.8] + 0.18[0.3,0.4] + 0.16[0.1,0.2] + 0.22[0.5,0.6]
+    = [0.47,\ 0.48].
+\]
+This $c_2$ now enters the decoder alongside $h_1^d$ and $\hat{y}_1$ to produce $h_2^d$. The
+whole process restarts at step 1 for the next decoder step, using the newly produced $h^d$.
+
+\paragraph{Attention is a distribution, not a selection.} A common misreading is that the
+decoder ``picks'' the highest-weighted source word. It does not --- \emph{all five}
+contributed to $c_2$. What changes between steps is where the weight is concentrated. When
+translating ``very cool'' into ``muy genial'', the weights at that step might be
+$[0.05, 0.08, 0.07, 0.38, 0.42]$: spread across two words, so $c$ blends both. Sharply peaked
+versus spread out --- that is the real distinction.
+
+\paragraph{What is interpretable and what is not.} The \emph{weights} $\alpha_{ij}$ are
+interpretable and are what people visualise as alignment heatmaps. The \emph{context vector}
+$c_i$ is not: its individual dimensions are learned, distributed, entangled features, and
+dimension 1 does not mean ``subject''.
+
+\paragraph{The encoder computes no loss of its own.} Loss is computed only at the decoder ---
+cross-entropy between predicted and gold target words, one per position, averaged into
+$L = \frac{1}{T}\sum_i L_i$, then a single backward pass. But the encoder's weights are
+absolutely updated: gradients flow backwards through the decoder, through the attention
+mechanism, and on into the encoder. The encoder is trained \emph{indirectly}, and the whole
+system is one model with one loss.
+
+\paragraph{Another reason attention helps.} Without attention the only gradient path into the
+encoder is through the single context vector. With attention, gradients reach \emph{all}
+encoder hidden states through the attention weights, so the encoder gets a far richer
+training signal.
+
+\paragraph{Is it unfair to blame the encoder for the decoder's mistakes?} This is the credit
+assignment question, and the answer is that the chain rule handles it automatically:
+\[
+\frac{\partial L}{\partial W_e}
+= \frac{\partial L}{\partial(\text{decoder output})}
+\cdot \frac{\partial(\text{decoder output})}{\partial c}
+\cdot \frac{\partial c}{\partial W_e}.
+\]
+If the encoder's contribution to the error was small, the middle term is small and the
+gradient reaching the encoder is proportionally small. No special fix is needed. More
+fundamentally, there is no independent definition of ``good encoder output'': the encoder's
+job is not to produce some universally correct representation but to produce one that is
+useful \emph{to this decoder}. The two co-adapt as a single jointly optimised system.
+
 \subsection{Why GPUs Matter (and Why Recurrence Became Unacceptable)}
 
 \paragraph{The hardware argument.} CPUs are latency-optimised: a few very fast cores,
@@ -340,6 +643,32 @@ tokens came in --- so order must be injected separately.
   $d_{\text{model}}$, which is what makes residual connections possible.
 \item Every sub-layer is wrapped as $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$.
 \end{itemize}
+
+\paragraph{Yes, the encoders and decoders are neural networks.} An ``encoder'' is not some
+new kind of object --- it is one architectural block made of a multi-head self-attention
+sub-layer, an Add \& Norm, a feed-forward network, and another Add \& Norm. ``Six encoders''
+means that \emph{same block design} is repeated six times, stacked one on top of the next.
+Each copy has its \textbf{own separate weights}; they are six instances of one design, not one
+network run six times. And there are no RNNs or LSTMs anywhere inside --- removing them is the
+entire point of the paper.
+
+\paragraph{Why stack six?} Each layer builds a more abstract representation of the same
+tokens: early layers tend to capture syntax, later layers semantics, in the same way a deep
+CNN goes edges $\rightarrow$ textures $\rightarrow$ objects. Six was an empirical choice. More
+layers give more capacity, with diminishing returns and rising cost.
+
+\paragraph{Embedding happens only in the bottom encoder.} This confuses many readers of
+Alammar's blog. Every encoder in the stack consumes a list of $d_{\text{model}}$-sized vectors
+and emits a list of $d_{\text{model}}$-sized vectors. For the \emph{bottom} encoder those
+input vectors are the word embeddings plus positional encodings. For every encoder above it,
+the input is simply the output of the encoder below --- already contextualised vectors, not
+tokens. There is nothing left to look up in an embedding table, so embedding happens once, at
+the bottom. This uniform ``vectors in, vectors out'' interface is exactly what makes the
+blocks stackable.
+
+\paragraph{Is the Transformer a seq2seq model?} Yes. It is an encoder--decoder that maps an
+input sequence to an output sequence; what changed is the internals, not the shape of the
+task.
 
 \subsection{Self-Attention}
 
@@ -417,6 +746,74 @@ pronoun depends on its antecedent, not the reverse. Separate $W^Q$ and $W^K$ bre
 symmetry. A separate $W^V$ additionally lets the model decide that the information worth
 \emph{passing on} differs from the information used for \emph{matching}.
 
+\subsection{Worked Example: Attention for a Single Word}
+
+\paragraph{The intuition first.} Read the sentence ``The trophy didn't fit in the suitcase
+because \textbf{it} was too big.'' You worked out instantly what ``it'' refers to, because
+your brain paid more attention to ``trophy'' than to ``suitcase''. That is all attention does:
+it lets every word look at every other word and ask, \emph{who here is most relevant to me?}
+
+\paragraph{The numbers.} Sentence ``The cat sat''; compute the attention output for ``cat''.
+Use 2-D vectors so the arithmetic is doable by hand --- real Transformers use 64, but the
+mathematics is identical. Assume the projections have already been applied:
+\[
+q_2 = [1,1] \ (\text{cat's query}); \qquad
+k_1 = [1,0],\ k_2 = [0,1],\ k_3 = [1,1];
+\]
+\[
+v_1 = [1,0],\ v_2 = [0,1],\ v_3 = [1,1].
+\]
+
+\paragraph{Step 1 --- raw scores ($q_2 \cdot k_j$).}
+\[
+\mathrm{score(The)} = 1,\qquad \mathrm{score(cat)} = 1,\qquad \mathrm{score(sat)} = 2.
+\]
+``sat'' scores highest, which is linguistically sensible.
+
+\paragraph{Step 2 --- scale by $\sqrt{d_k} = \sqrt2 \approx 1.414$.}
+$[0.707,\ 0.707,\ 1.414]$.
+
+\paragraph{Step 3 --- softmax.} $e^{0.707} \approx 2.028$ (twice) and
+$e^{1.414} \approx 4.113$, summing to $8.169$, giving
+\[
+\alpha = [0.248,\ 0.248,\ 0.504]
+\]
+--- 24.8\% attention on ``The'', 24.8\% on itself, 50.4\% on ``sat''.
+
+\paragraph{Step 4 --- weighted sum of the values.}
+\[
+z_2 = 0.248[1,0] + 0.248[0,1] + 0.504[1,1] = [0.752,\ 0.752].
+\]
+``cat'' is no longer ``cat'' in isolation: its new vector is a blend, pulled mostly toward
+``sat''. In the lecture slides this output is written $z$ for one word and $Z$ for the whole
+sentence at once, with $Z = AV$.
+
+\paragraph{Mapping each step back to the formula.}
+\begin{center}
+\begin{tabular}{ll}
+\textbf{Formula piece} & \textbf{What we did} \\
+\hline
+$QK^\top$ & dot products $\rightarrow [1, 1, 2]$ \\
+$\div \sqrt{d_k}$ & divide by 1.414 $\rightarrow [0.707, 0.707, 1.414]$ \\
+$\mathrm{softmax}(\cdot)$ & $\rightarrow [0.248, 0.248, 0.504]$ \\
+$\times V$ & weighted sum $\rightarrow [0.752, 0.752]$ \\
+\end{tabular}
+\end{center}
+
+\paragraph{The scaling argument, stated precisely.} $q \cdot k = \sum_{i=1}^{d_k} q_i k_i$ is
+a sum of $d_k$ terms. If the components have mean 0 and variance 1, the dot product has mean 0
+but \textbf{variance $d_k$} --- it grows linearly with the dimension. Dividing by $\sqrt{d_k}$
+scales the variance back to
+$\mathrm{Var}\!\left(\frac{q \cdot k}{\sqrt{d_k}}\right) \propto \frac{d_k}{d_k} = 1$,
+and it is the unique scaling with that property. Without it, at $d_k = 512$ the logits are
+large, the softmax saturates into a near one-hot distribution, and its gradient goes to zero.
+
+\paragraph{A counting clarification.} For the sentence ``There is a cat'' with one head, each
+\emph{word} gets one $q$, one $k$ and one $v$ --- 12 vectors. But those are stacked into
+\textbf{3 matrices} per head ($Q$, $K$, $V$), each $4 \times d_k$, one row per word. Each head
+has its own three \emph{weight} matrices $W^Q, W^K, W^V$; $Q, K, V$ are the results of
+applying them, not things a word owns individually.
+
 \subsection{Multi-Head Attention}
 
 \paragraph{What it is.} Run $h$ self-attention operations in parallel with different learned
@@ -449,6 +846,66 @@ instead of eight of width 64?} Parameter count would be similar, but the layer c
 represent only one attention pattern per layer. Empirically this is clearly worse. The
 lesson is that the benefit comes from having \emph{multiple simultaneous} attention
 distributions, not from extra parameters.
+
+\paragraph{The heads run in parallel, not one after another.} A common misstatement is
+``compute $z$ once, then seven more times''. All $h$ heads run simultaneously, each with its
+own $W^Q, W^K, W^V$, producing $Z_1 \ldots Z_h$ at the same time. The feed-forward network
+expects a single matrix, so the heads' outputs are concatenated side by side and multiplied
+by $W^O$ to compress back to $d_{\text{model}}$ --- only then does the result go to the FFN.
+
+\subsection{Worked Example: Multi-Head Dimensions}
+
+\paragraph{Setup.} Sentence ``The cat sat'' (3 words), $d_{\text{model}} = 4$, 2 heads, so
+$d_k = d_{\text{model}}/h = 4/2 = 2$. (Real Transformer: 512, 8, 64.) The input $X$ is
+$3 \times 4$.
+
+\paragraph{Per head.}
+\[
+Q = X W^Q: (3{\times}4)(4{\times}2) = (3{\times}2), \qquad \text{same for } K, V.
+\]
+\[
+QK^\top: (3{\times}2)(2{\times}3) = (3{\times}3) \ \text{scores} \ \rightarrow
+\text{scale} \rightarrow \text{softmax} \rightarrow
+Z = AV: (3{\times}3)(3{\times}2) = (3{\times}2).
+\]
+
+\paragraph{Combining.} Concatenate $Z_1 \| Z_2$ along the columns: $(3 \times 4)$ --- back to
+the original width. Then multiply by $W^O$ of shape $(4 \times 4)$, giving
+$Z_{\text{final}}$ of shape $(3 \times 4)$: \emph{exactly the shape of the input $X$}. That
+is what allows blocks to stack and residual connections to work.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Thing} & \textbf{Shape} & \textbf{Why} \\
+\hline
+$X$ & $n \times d_{\text{model}}$ & $n$ words, each $d_{\text{model}}$ wide \\
+$W^Q / W^K / W^V$ per head & $d_{\text{model}} \times d_k$ & projects down to this head's slice \\
+$Q, K, V$ per head & $n \times d_k$ & one row per word \\
+$Z$ per head & $n \times d_k$ & same width as $V$ \\
+Concatenated & $n \times (h \cdot d_k) = n \times d_{\text{model}}$ & the key identity \\
+After $W^O$ & $n \times d_{\text{model}}$ & back to the original width \\
+\end{tabularx}
+\end{center}
+The relationship $h \cdot d_k = d_{\text{model}}$ is what makes the dimensions line up
+end-to-end. With 8 heads in the real model: $8 \times 64 = 512$.
+
+\paragraph{Where the numbers in $W^Q$'s shape come from.} If $W^Q$ is $(4 \times 2)$, the
+\textbf{4 rows} exist because each word's input vector has 4 numbers --- the matrix must
+accept $d_{\text{model}}$ numbers in. The \textbf{2 columns} exist because $d_k = 2$, not
+directly ``because there are 2 heads''. The head count influences it only indirectly, through
+$d_k = d_{\text{model}}/h$. With 4 heads, $d_k$ would be 1 and $W^Q$ would be $(4 \times 1)$.
+
+\paragraph{A tiny end-to-end run.} With $d_{\text{model}} = 2$, 2 heads, $d_k = 1$, and
+$X = \begin{bmatrix}1&0\\0&1\\1&1\end{bmatrix}$, let head 1 project onto the first coordinate
+and head 2 onto the second. Head 1's scores make ``The'' and ``sat'' attend to each other
+(both have a 1 in slot 1); head 2's make ``cat'' and ``sat'' attend to each other. The outputs
+are
+\[
+Z_1 = [0.84,\ 0.66,\ 0.84]^\top, \qquad Z_2 = [0.66,\ 0.84,\ 0.84]^\top,
+\]
+concatenating to $\begin{bmatrix}0.84&0.66\\0.66&0.84\\0.84&0.84\end{bmatrix}$. Two heads,
+two different relationships discovered at the same time --- which is the entire argument for
+multi-head attention, made concrete.
 
 \subsection{Positional Encoding}
 
@@ -496,6 +953,52 @@ This works and is arguably cleaner conceptually, but it costs extra dimensions i
 subsequent layer. Addition is chosen for efficiency; the model can learn to allocate
 subspaces to content versus position.
 
+\paragraph{Where it sits in the pipeline.} Token $\rightarrow$ embedding $\rightarrow$
+\emph{add} positional encoding $\rightarrow$ attention. It happens \textbf{once, at the input},
+not before every attention layer. (Contrast RoPE later, which is applied inside every layer.)
+
+\paragraph{Why sine \emph{and} cosine, paired?} Not because even and odd indices are special
+--- the even/odd split is just the paper's implementation convention. The reason is the
+\emph{pairing}. If you used sine alone you would lose uniqueness, because
+$\sin(\theta) = \sin(\pi - \theta)$, so two different positions could produce the same value.
+A $(\sin, \cos)$ pair is like a point $(x,y)$ on a unit circle: it pins down the angle
+uniquely. Each pair at frequency $i$ is a clock hand rotating at its own speed; stack many
+clocks at different speeds and every position gets a unique fingerprint.
+
+\paragraph{The deeper reason: relative positions become a fixed linear operation.} From the
+angle-addition identities,
+\[
+\sin((p{+}k)\omega) = \sin(p\omega)\cos(k\omega) + \cos(p\omega)\sin(k\omega),
+\]
+\[
+\cos((p{+}k)\omega) = \cos(p\omega)\cos(k\omega) - \sin(p\omega)\sin(k\omega),
+\]
+which written as a matrix product is exactly
+\[
+PE(p + k) = M_k \cdot PE(p), \qquad
+M_k = \begin{pmatrix} \cos k\omega & \sin k\omega \\ -\sin k\omega & \cos k\omega \end{pmatrix},
+\qquad
+PE(p) = \begin{pmatrix}\sin(p\omega)\\ \cos(p\omega)\end{pmatrix}.
+\]
+Every entry of $M_k$ depends only on $k$ and $\omega$ --- \textbf{not on $p$}. So the same
+matrix takes you two steps ahead from \emph{any} starting position. $M_k$ is a rotation
+matrix, which is the clock-hand picture stated algebraically, and it comes from trigonometry,
+not from training.
+
+\paragraph{What that buys you, concretely.} Take ``The cat sat on the mat''. With $k = 2$,
+$M_2$ maps $PE(1)$ (``cat'') to $PE(3)$ (``on''), and the very same $M_2$ maps $PE(2)$
+(``sat'') to $PE(4)$ (``the''). Without this property, the relationship between positions 1
+and 3 would look numerically unrelated to the relationship between positions 50 and 52, even
+though the gap is identical, and the model would have to learn every pair separately. With it,
+``two apart'' is structurally the same everywhere, so attention can generalise about relative
+distance instead of memorising position pairs.
+
+\paragraph{A correction worth internalising.} It is tempting to say ``sin/cos saves us from
+recomputing $PE(p+k)$''. That is not the benefit --- positional encodings are precomputed for
+all positions before training even starts, so there is no runtime recomputation to avoid. The
+real benefit is about the \emph{attention mechanism}: relative distances are structurally
+consistent, so relative position is something the model can generalise rather than memorise.
+
 \subsection{Residual Connections and Layer Normalisation (Add \& Norm)}
 
 \paragraph{What it is.} Around every sub-layer, the input is added to the output and the sum
@@ -539,6 +1042,37 @@ would become untrainable: gradients would vanish and the token's own identity wo
 after a few rounds of attention mixing. Empirically, removing residuals from a Transformer
 is catastrophic, far more so than removing multi-head structure.
 
+\paragraph{``But the original $X$ has no attention in it --- doesn't adding it back spoil the
+attention output?''} No, and the reason is that the attention sub-layer is trained
+\emph{knowing} the addition will happen. $\mathrm{MHA}(X)$ is not trying to be a complete new
+representation; it is optimised to produce \emph{what needs to be added} to $X$ to improve it.
+It is a correction, a delta, not a rewrite. $X$ carries token identity and position;
+$\mathrm{MHA}(X)$ carries contextual updates; $X' = X + \mathrm{MHA}(X)$ carries both, and
+neither cancels the other. If you discarded $X$ you would actually risk \emph{losing} precise
+token identity, because attention is a weighted average over all positions and averaging
+blurs. Where $X$ already captures something well, the model learns to add only a small
+correction; where context matters more, attention contributes more. The balance is learned.
+
+\paragraph{``Doesn't normalisation destroy information?''} Suppose $[2,4,5,1]$ becomes
+something like $[0.3, 0.45, 0.7, 0.1]$. What is \emph{preserved} is the relative structure ---
+which dimensions are large, which are small, and roughly by how much. The fact that the third
+element dominated and the fourth was weakest survives intact. What is \emph{lost} is the
+absolute magnitude: afterwards you cannot tell whether the original values were around 5 or
+around 500.
+
+\paragraph{Why losing absolute magnitude is safe.} Meaning in vector representations lives in
+\emph{direction}, not length --- similarity between word vectors is measured by cosine
+similarity, which depends only on the angle. So two vectors pointing the same way mean the
+same thing whether their magnitudes are 1 or 1000. (One precision: layer norm also
+mean-centres, so it is not strictly angle-preserving in the way pure L2 normalisation would
+be. The practical effect is the same.)
+
+\paragraph{And anything genuinely needed can be restored.} After normalising, layer norm
+applies two \emph{learned} parameters per dimension: a scale $\gamma$ and a shift $\beta$. If
+some particular scale really did matter, the model learns to put it back through $\gamma$.
+Normalisation puts everything on a clean, stable baseline; $\gamma$ and $\beta$ then reshape
+it into whatever the network actually wants.
+
 \subsection{The Position-wise Feed-Forward Network}
 
 \paragraph{What it is.} A two-layer MLP applied independently and identically to every
@@ -556,6 +1090,24 @@ tokens, the FFN mixes across features}. It also holds most of the parameters (ro
 two-thirds of a Transformer block), and is widely believed to store much of the model's
 factual knowledge --- which is why Mixture-of-Experts models make \emph{this} layer the
 expert layer.
+
+\paragraph{What ``position-wise'' actually means.} The \emph{same} MLP --- the same $W_1, b_1,
+W_2, b_2$ --- is applied to every token's vector, but each token is processed
+\textbf{independently}, with no information flowing between positions. While the FFN is
+processing token $x_3$, it has no idea what $x_1$ or $x_2$ look like. Weights shared across
+positions; computation separate per position.
+
+\paragraph{Why that is useful even though tokens do not interact.} The interaction already
+happened. By the time a vector reaches the FFN, attention has already mixed in context from
+other tokens. The FFN's job is to \emph{transform that individual representation} --- refine
+it with a learned non-linear function --- not to mix across positions again. Attention is the
+\textbf{communication} step; the FFN is the \textbf{computation} step.
+
+\paragraph{Parameter accounting.} Ignoring biases, the two matrices are
+$d_{\text{model}} \times 4d_{\text{model}}$ and $4d_{\text{model}} \times d_{\text{model}}$,
+so $8 d_{\text{model}}^2$ parameters per block. For $d_{\text{model}} = 768$ that is about
+4.72M per block, or roughly 56.6M across 12 blocks --- the majority of a GPT-1-sized model's
+120M, before attention and embeddings are even counted.
 
 \subsection{The Decoder}
 
@@ -583,6 +1135,228 @@ hypotheses; sampling with temperature and top-$k$/top-$p$ is used for creative g
 model would see the answer while predicting it, achieve near-zero training loss, and be
 completely useless at generation time, when future tokens do not exist. The mask is not a
 performance trick --- it is what makes the training objective match the inference procedure.
+
+\paragraph{``Outputs (shifted right)'', made concrete.} Suppose the correct translation is
+``I am happy''. During training the target is offset by one position before being fed in:
+\begin{center}
+\begin{tabular}{ll}
+\textbf{Decoder input (shifted right)} & \textbf{Should predict} \\
+\hline
+\texttt{[START]} & \texttt{I} \\
+\texttt{[START] I} & \texttt{am} \\
+\texttt{[START] I am} & \texttt{happy} \\
+\texttt{[START] I am happy} & \texttt{[END]} \\
+\end{tabular}
+\end{center}
+Without the shift, position $t$ would have the answer sitting in its own input and could
+simply copy it. The shift enforces: \emph{predict the next token from everything before it.}
+
+\paragraph{At inference the shift disappears, but the structure survives.} There is no target
+to shift. The decoder starts from \texttt{[START]}, predicts a token, appends it, and steps
+again --- which produces exactly the same input/output pairing as the table above, one step at
+a time instead of all at once. ``Shifted right'' is a training-time description; the
+autoregressive loop replaces it at test time.
+
+\paragraph{So during training the whole sentence really is generated at once.} Yes. All
+positions are predicted in one forward pass. The mask is what makes that safe: at position 2,
+even though ``am'' and ``happy'' are physically present in the input matrix, the mask blocks
+attention to them, so position 2 effectively sees only \texttt{[START] I}. Inference is
+inherently sequential because you do not have the target; training does not have to be,
+because you do. That is the whole efficiency argument for teacher forcing plus masking --- one
+forward pass computes the loss for every position, instead of running the decoder $T$ times.
+
+\subsection{Worked Example: Masked Self-Attention in the Decoder}
+
+\paragraph{Setup.} Target tokens \texttt{<SOS>}, ``El'', ``perro'';
+$d_{\text{model}} = 4$, 2 heads, so $d_k = 2$. For head 1, suppose the projections give
+$Q_1 = K_1 = V_1 = \begin{bmatrix}1&0\\0&1\\1&1\end{bmatrix}$.
+
+\paragraph{Raw scores, then scaling by $1/\sqrt{2} \approx 0.707$.}
+\begin{center}
+\begin{tabular}{c|ccc}
+ & $k_0$ & $k_1$ & $k_2$ \\
+\hline
+$q_0$ & 0.71 & 0.00 & 0.71 \\
+$q_1$ & 0.00 & 0.71 & 0.71 \\
+$q_2$ & 0.71 & 0.71 & 1.41 \\
+\end{tabular}
+\end{center}
+
+\paragraph{Where exactly the masking happens: after scaling, before softmax.} You add a mask
+matrix whose future entries are $-\infty$ and whose current/past entries are 0:
+\[
+M = \begin{bmatrix}0 & -\infty & -\infty\\ 0 & 0 & -\infty\\ 0 & 0 & 0\end{bmatrix},
+\qquad\text{so}\qquad
+\mathrm{Attention} = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M\right)V .
+\]
+Because $e^{-\infty} = 0$, those positions contribute \emph{exactly} zero --- not merely a
+small weight, but none at all.
+
+\paragraph{Softmax, row by row.}
+\begin{center}
+\begin{tabular}{c|ccc}
+ & \texttt{<SOS>} & \texttt{El} & \texttt{perro} \\
+\hline
+\texttt{<SOS>} & 1.000 & 0.000 & 0.000 \\
+\texttt{El} & 0.330 & 0.670 & 0.000 \\
+\texttt{perro} & 0.249 & 0.249 & 0.502 \\
+\end{tabular}
+\end{center}
+Row 0 has only one finite value, so it is forced to 1.0 --- the first token can only attend to
+itself. Then $Z_1 = A_1 V_1$ gives $[1.000, 0.000]$, $[0.330, 0.670]$ and $[0.751, 0.751]$
+for the three positions.
+
+\paragraph{What the mask enforced.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Token} & \textbf{Could attend to} & \textbf{Could not attend to} \\
+\hline
+\texttt{<SOS>} & only itself & El, perro \\
+\texttt{El} & \texttt{<SOS>}, El & perro \\
+\texttt{perro} & \texttt{<SOS>}, El, perro & --- \\
+\end{tabularx}
+\end{center}
+The concatenated output then goes to Add \& Norm, and from there into cross-attention, where
+it will query the encoder's output.
+
+\subsection{How the Encoder and Decoder Stacks Are Wired Together}
+
+\paragraph{Why $e_6$'s output goes to \emph{every} decoder layer.} Each decoder block has a
+cross-attention sub-layer, which needs $K$ and $V$ from the encoder and $Q$ from itself. The
+encoder's work is completely finished after $e_6$ --- that is its richest understanding of the
+source. So $e_6$'s output is turned into $K$ and $V$ once, and those same $K$ and $V$ are made
+available to $d_1$ through $d_6$. Every decoder layer independently needs to ask ``which part
+of the source matters right now?''.
+
+\paragraph{Why $d_2 \ldots d_6$ also take input from the layer below.} That is just stacking,
+exactly as on the encoder side. $d_1$'s output is $d_2$'s input, and so on, each block
+refining the representation a little further. So $d_n$ takes the output of $d_{n-1}$, runs it
+through masked self-attention, then cross-attention (using $e_6$'s $K$ and $V$), then the FFN,
+and hands the result up to $d_{n+1}$.
+
+\paragraph{$d_1$ does not produce words.} No individual decoder block does. Each block outputs
+a \emph{matrix of hidden representations} of the same shape as its input --- one vector per
+target position --- now enriched by masked self-attention, cross-attention and the FFN. Token
+prediction happens only once, after $d_6$, through the linear and softmax layers. Think of it
+as layers of abstraction: $d_1$ might learn rough source--target alignments and basic syntax,
+the middle layers refine those into nuanced relationships, and $d_5$/$d_6$ produce highly
+abstract representations ready for prediction. Exactly the same logic as the encoder needing
+six layers.
+
+\subsection{Worked Example: The Final Linear and Softmax Layers}
+
+\paragraph{Setup.} $d_6$'s output is one 4-dimensional vector per position:
+$H = \begin{bmatrix}1&0&0&0\\0&1&0&0\\0&0&1&0\end{bmatrix}$ for \texttt{<SOS>}, ``El'',
+``perro''. Vocabulary of 6: \{\texttt{<SOS>}, \texttt{<EOS>}, El, perro, se, sent\'o\}.
+
+\paragraph{Linear.} A learned $W \in \mathbb{R}^{4 \times 6}$ turns each
+$d_{\text{model}}$-vector into one score (logit) per vocabulary word. Suppose it yields
+\begin{center}
+\begin{tabular}{c|cccccc}
+ & \texttt{<SOS>} & \texttt{<EOS>} & El & perro & se & sent\'o \\
+\hline
+\texttt{<SOS>} & 0.1 & 0.1 & \textbf{2.0} & 0.1 & 0.1 & 0.1 \\
+El & 0.1 & 0.1 & 0.1 & \textbf{2.0} & 0.1 & 0.1 \\
+perro & 0.1 & 0.1 & 0.1 & 0.1 & \textbf{2.0} & 0.1 \\
+\end{tabular}
+\end{center}
+
+\paragraph{Softmax, row by row and independently.} For the first row,
+$e^{0.1} \approx 1.105$ and $e^{2.0} \approx 7.389$, so the sum is
+$5(1.105) + 7.389 = 12.914$ and $P(\text{El} \mid \texttt{<SOS>}) = 7.389/12.914 \approx
+0.572$, with everything else at $\approx 0.086$.
+
+\paragraph{Each row predicts the \emph{next} token.} This is the critical reading:
+\texttt{<SOS>} $\rightarrow$ El, El $\rightarrow$ perro, perro $\rightarrow$ se. All three
+happen simultaneously during training.
+
+\paragraph{Loss.} Cross-entropy at each position against the true next token, then averaged:
+\[
+\mathcal{L} = -\tfrac{1}{3}\left[\log(0.572) + \log(0.572) + \log(0.572)\right] \approx 0.557 .
+\]
+
+\paragraph{Where the loss is and is not computed.} It is computed \textbf{once}, after the
+final decoder layer passes through linear $+$ softmax. Layers $d_1 \ldots d_5$ only transform
+representations; they produce no vocabulary distribution, so there is nothing to score them
+against. But every layer still \emph{receives} gradients. The full backward path is
+\[
+\mathcal{L} \rightarrow \text{Linear} \rightarrow d_6 \rightarrow \cdots \rightarrow d_1
+\rightarrow \text{cross-attention} \rightarrow e_6 \rightarrow \cdots \rightarrow e_1 ,
+\]
+so the encoder is updated too --- its output was used as $K$ and $V$ in every decoder layer's
+cross-attention, so it participated in producing the loss.
+
+\subsection{Which Weights Are Shared, and Which Are Not}
+
+This is a favourite question and the answer is surprisingly lopsided: almost nothing is
+shared.
+
+\paragraph{The one genuine case of sharing: weight tying.} A single matrix
+$W_E \in \mathbb{R}^{|V| \times d_{\text{model}}}$ does three jobs:
+\begin{enumerate}
+\item embeds encoder input tokens;
+\item embeds decoder input tokens;
+\item acts (transposed) as the final pre-softmax linear projection.
+\end{enumerate}
+Embedding is $W_E \cdot \text{one-hot}$ (pick a row); the output projection is
+$W_E^\top h$ (project back to vocabulary size). Same weights, opposite direction.
+
+\paragraph{Why that is possible: a shared vocabulary.} The original paper trained BPE on the
+\emph{combined} text of both languages, producing one unified list of roughly 37K subword
+tokens containing English pieces, French pieces, and pieces common to both (\texttt{tion},
+say). Token ID 47 therefore means the same subword unit on both sides. If instead you built
+two separate vocabularies, ID 47 would mean unrelated things in each, and you could not share
+the embedding matrix between encoder and decoder --- though decoder-input-to-output tying
+would still work.
+
+\paragraph{Everything else is separate.}
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Component} & \textbf{Relationship} \\
+\hline
+$e_1$ vs $e_2$ & Completely separate: self-attention (all heads), FFN, LayerNorm \\
+$d_1$ vs $d_2$ & Completely separate: masked self-attention, cross-attention, FFN, LayerNorm \\
+Head 1 vs head 2 vs head 3 within one module & Each head has its own $W_Q^h, W_K^h, W_V^h$ \\
+Masked self-attention vs cross-attention in the same decoder layer & Two fully independent
+attention modules, each with its own heads and its own $W^O$ \\
+\end{tabularx}
+\end{center}
+The paper states it directly: ``the linear transformations use different parameters from layer
+to layer.''
+
+\paragraph{Counting, for a 3-head module.} Nine projection matrices ($3$ heads $\times$
+$W_Q, W_K, W_V$) plus \textbf{one} $W^O$. Note that $W^O$ is not ``shared among the heads'' in
+any meaningful sense --- no head ever touches it. The heads finish, their outputs are
+concatenated, and $W^O$ is applied \emph{once} to the concatenated result.
+
+\paragraph{$W^O$ is not the output linear layer.} Different shapes, different places,
+different purposes. $W^O \in \mathbb{R}^{h d_v \times d_{\text{model}}}$ lives \emph{inside}
+every attention module and resizes concatenated head outputs. $W_E^\top \in \mathbb{R}^{
+d_{\text{model}} \times |V|}$ sits at the very end of the whole decoder stack and projects to
+vocabulary logits. They are never shared.
+
+\paragraph{Add \& Norm parameters.} The ``Add'' has no learnable weights at all --- it is a
+plain residual addition. The ``Norm'' has two, $\gamma$ and $\beta$, each of size
+$d_{\text{model}}$, and \emph{every} LayerNorm instance has its own. So an encoder layer has
+2 sets, a decoder layer has 3 sets (one after each of masked self-attention, cross-attention
+and the FFN). A 2-encoder, 2-decoder model therefore has 4 sets on the encoder side and 6 on
+the decoder side.
+
+\paragraph{A distinction worth stating precisely: shared weights versus a shared tensor.} The
+output of $e_6$ is fed into cross-attention in every decoder layer. That is a shared
+\emph{activation tensor}, not shared weights --- each decoder layer projects that same tensor
+with its own $W_K^{\text{cross}}$ and $W_V^{\text{cross}}$. Same input, different treatment.
+
+\paragraph{Full inventory for a 1-encoder, 1-decoder, 1-head model.}
+\begin{itemize}
+\item \textbf{Shared:} $W_E$.
+\item \textbf{Encoder:} self-attention $W_Q$, $W_K$, $W_V$, $W^O$; LayerNorm
+  $\gamma_1, \beta_1$; FFN $W_1, b_1, W_2, b_2$; LayerNorm $\gamma_2, \beta_2$.
+\item \textbf{Decoder:} masked self-attention $W_Q$, $W_K$, $W_V$, $W^O$; LayerNorm
+  $\gamma_1, \beta_1$; cross-attention $W_Q$, $W_K$, $W_V$, $W^O$; LayerNorm
+  $\gamma_2, \beta_2$; FFN $W_1, b_1, W_2, b_2$; LayerNorm $\gamma_3, \beta_3$.
+\end{itemize}
+Positional encodings are fixed sinusoids in the original paper, so they are not weights.
 
 \subsection{Byte-Pair Encoding (BPE) and Subword Tokenization}
 
@@ -632,6 +1406,77 @@ SentencePiece & T5, LLaMA (treats input as a raw byte stream, so no pre-tokeniza
 needed and whitespace is reversible; works for languages without spaces) \\
 \end{tabularx}
 \end{center}
+
+\paragraph{The algorithm, in four lines.}
+\begin{enumerate}
+\item Split every word into individual characters and append an end-of-word symbol
+  (\texttt{</w>}).
+\item Count every adjacent pair across the whole corpus.
+\item Merge the single most frequent pair into one new symbol.
+\item Repeat for a fixed number of merges --- \textbf{the only hyperparameter}.
+\end{enumerate}
+
+\subsection{Worked Example: BPE from Start to Finish}
+
+\paragraph{Corpus and hyperparameter.} Four words with frequencies: \texttt{low} ($\times5$),
+\texttt{lower} ($\times2$), \texttt{newest} ($\times6$), \texttt{widest} ($\times3$). Number
+of merge operations: \textbf{10}.
+
+\paragraph{Step 0 --- initialise.}
+\texttt{l o w </w>} \quad \texttt{l o w e r </w>} \quad \texttt{n e w e s t </w>} \quad
+\texttt{w i d e s t </w>}
+
+\paragraph{Step 1 --- count pairs.} \texttt{e s} $= 6+3 = 9$; \texttt{s t} $= 6+3 = 9$;
+\texttt{l o} $= 5+2 = 7$; \texttt{o w} $= 5+2 = 7$; \texttt{e w} $= 6$; and so on.
+\texttt{e s} and \texttt{s t} are tied at 9; take \texttt{e s}. Merge:
+\texttt{n e w es t </w>}, \texttt{w i d es t </w>}.
+
+\paragraph{Steps 2--7.} Recount after every merge --- that is the part people forget.
+\begin{center}
+\begin{tabular}{clll}
+\textbf{Step} & \textbf{Most frequent pair} & \textbf{Count} & \textbf{Result} \\
+\hline
+2 & \texttt{es t} & 9 & \texttt{newest} $\rightarrow$ \texttt{n e w est </w>} \\
+3 & \texttt{l o} & 7 & \texttt{low} $\rightarrow$ \texttt{lo w </w>} \\
+4 & \texttt{lo w} & 7 & \texttt{low} $\rightarrow$ \texttt{low </w>} \\
+5 & \texttt{n e} & 6 & \texttt{newest} $\rightarrow$ \texttt{ne w est </w>} \\
+6 & \texttt{ne w} & 6 & \texttt{newest} $\rightarrow$ \texttt{new est </w>} \\
+7 & \texttt{new est} & 6 & \texttt{newest} $\rightarrow$ \texttt{newest </w>} \\
+\end{tabular}
+\end{center}
+Steps 8--10 mop up lower-frequency pairs in \texttt{lower} and \texttt{widest}
+(\texttt{w i}, \texttt{w id}, \texttt{e r}). After all ten merges \texttt{lower} settles as
+\texttt{low er </w>}, because \texttt{er} never becomes frequent enough to merge into
+\texttt{low}.
+
+\paragraph{The learned vocabulary.} \texttt{l, o, w, e, r, n, s, t, i, d, </w>, es, est, lo,
+low, ne, new, newest, wi, wid, \ldots} --- note that frequent whole words survive as single
+tokens while rarer ones stay decomposed.
+
+\paragraph{The payoff: an unseen word.} \texttt{lowest} never appeared in training. Apply the
+learned merge rules \emph{in order}:
+\[
+\texttt{l o w e s t </w>} \rightarrow \texttt{lo w e s t} \rightarrow \texttt{low e s t}
+\rightarrow \texttt{low es t} \rightarrow \texttt{low est}.
+\]
+So \texttt{lowest} becomes two known subword units, \texttt{low} $+$ \texttt{est}. The model
+never saw the word, but it knows \texttt{low} from ``low'' and ``lower'' and \texttt{est} from
+``newest'' and ``widest'', so it can compose a meaning. No \texttt{<UNK>} required.
+
+\paragraph{Choosing the number of merges.} It is set before training, usually by
+experimentation, but with guidelines:
+\begin{itemize}
+\item \textbf{Morphology:} richer languages (Turkish, Finnish, Arabic) need more merges,
+  because meaning is carried by affixes. English needs fewer.
+\item \textbf{Vocabulary target:} more merges $\rightarrow$ bigger vocabulary, shorter
+  sequences; fewer merges $\rightarrow$ more character-level splits, longer sequences.
+\item \textbf{Dataset size:} bigger corpora support more merges, since rarer units still occur
+  often enough to be meaningful.
+\item \textbf{Context length:} longer tokens mean shorter sequences, which matters if your
+  model has a context limit.
+\end{itemize}
+The original paper used \textbf{32{,}000--37{,}000} merges for machine translation, and 32K
+remains the usual default.
 
 \subsection{Transformer: Summary Judgement}
 
@@ -716,6 +1561,87 @@ Tokenization is WordPiece. Inputs are built as
 embeddings summed. The final hidden state of \texttt{[CLS]} is the aggregate sequence
 representation used for classification.
 
+\paragraph{Details the slide leaves out.} The feed-forward (filter) size inside each block is
+always $4H$ --- 3072 for BASE, 4096 for LARGE. The per-head dimension is $H/A$, which is
+$768/12 = 64$ for BASE and $1024/16 = 64$ for LARGE: \emph{both sizes use the same 64-wide
+heads}, just more of them. The WordPiece vocabulary has 30{,}000 entries, so the input
+embedding matrix alone is $30{,}000 \times 768 \approx 23.0$M parameters for BASE --- about a
+fifth of the whole 110M budget before a single encoder block is counted.
+
+\paragraph{Why BERT-base is exactly GPT-1-sized.} $L = 12$, $H = 768$ was chosen deliberately
+to match GPT-1 so the two could be compared fairly. The architectures are the same size; what
+differs is the attention pattern (bidirectional versus causal).
+
+\subsection{BERT's Three Input Embeddings}
+
+Every input vector is the \emph{sum} of three embeddings of the same width:
+\[
+\text{input}_i = E_{\text{token}}(w_i) + E_{\text{pos}}(i) + E_{\text{segment}}.
+\]
+\begin{itemize}
+\item \textbf{Token embedding} --- the ordinary vocabulary lookup.
+\item \textbf{Position embedding} --- a \emph{learned} vector per position index (BERT does
+  not use sinusoids).
+\item \textbf{Segment embedding} --- says which of the two packed sentences this token belongs
+  to. Only two exist, $E_A$ and $E_B$, shared by every token on their side. For
+  single-sentence tasks everything gets $E_A$ and the embedding degenerates to a constant.
+\end{itemize}
+
+\paragraph{Why segment embeddings are needed.} Self-attention has no inherent notion of
+sentence boundaries beyond the \texttt{[SEP]} token itself. The segment embedding gives every
+token an explicit learned signal of which side it is on, which matters directly for NSP and
+later for question answering (segment A $=$ question, segment B $=$ passage).
+
+\paragraph{Worked example.} Sequence \texttt{[CLS] the cat [SEP] sat down [SEP]} with
+$d_{\text{model}} = 4$. Toy values:
+$E_{\text{tok}}(\text{cat}) = [0.2, 0.9, 0.1, 0.0]$,
+$E_{\text{pos}}(2) = [0.0, 0.2, 0.0, 0.1]$,
+$E_A = [0.05, 0.05, 0.05, 0.05]$, $E_B = [0.15, 0.15, 0.15, 0.15]$. Then
+\[
+[0.2,0.9,0.1,0.0] + [0.0,0.2,0.0,0.1] + [0.05,0.05,0.05,0.05] = [0.25,\ 1.15,\ 0.15,\ 0.15]
+\]
+for ``cat'' at position 2 in segment A.
+
+\paragraph{The illustrative punchline.} The two \texttt{[SEP]} tokens have \emph{identical}
+token embeddings --- both are $[0.0, 0.0, 0.5, 0.5]$ --- yet they end up different:
+\[
+\text{pos 3, segment A} \rightarrow [0.25,\ 0.05,\ 0.55,\ 0.75], \qquad
+\text{pos 6, segment B} \rightarrow [0.15,\ 0.35,\ 0.65,\ 0.65].
+\]
+Same token, different final representation --- which is exactly what lets the model tell
+``this separator ends sentence A'' from ``this one ends sentence B'', purely from the summed
+embedding, before any attention layer runs.
+
+\subsection{Keeping Track of BERT's Dimensions}
+
+\paragraph{768 is BERT-base only.} BERT-large uses $H = 1024$. Worked examples usually use 768
+because base is the more commonly used variant.
+
+\paragraph{The input is a matrix, not one long vector.} A frequent confusion: with 5 tokens
+and $H = 768$, is the input a $3840$-dimensional vector? No --- it is a $5 \times 768$
+\emph{matrix}, one row per token. Sequence length and hidden size are two independent axes,
+not multiplied together. This matters for attention: self-attention must compare each token
+against every other individually via dot products, which only makes sense if each token still
+owns a separate row. Flatten everything and the token boundaries are gone.
+
+\paragraph{768 in, 768 out, at every single layer.} Every encoder layer preserves the width:
+\begin{itemize}
+\item \textbf{Attention:} $Q, K, V$ are split into 12 heads of $768/12 = 64$; each head
+  outputs 64; concatenating gives $12 \times 64 = 768$; $W^O$ ($768 \times 768$) keeps it at
+  768; residual $+$ LayerNorm keeps it at 768.
+\item \textbf{FFN:} $768 \rightarrow 3072 \rightarrow 768$. It expands internally by a factor
+  of 4 with GELU in between, then projects straight back down.
+\end{itemize}
+
+\paragraph{Why it \emph{must} stay constant.} The residual connection computes
+$x + \mathrm{Sublayer}(x)$, and you cannot add two vectors of different sizes. That single
+constraint forces every layer's output --- across all 12 or 24 blocks --- to keep the same
+width. Dimension changes only \emph{inside} the FFN, never at the interface between layers.
+
+\paragraph{And if you concatenate the last four hidden layers?} Each token's vector grows
+fourfold: $4 \times 768 = 3072$. For a 5-token sequence the result is $5 \times 3072$. The
+number of tokens is unaffected; only the per-token width changes.
+
 \paragraph{Pretraining task 1: Masked Language Modelling (MLM).} Choose 15\% of tokens at
 random as prediction targets. For each chosen token:
 \begin{itemize}
@@ -740,7 +1666,75 @@ That is the sharpest way to state the justification.
 predict whether B actually followed A. Half the training pairs are genuine successors and
 half are random sentences from the corpus. Motivation: important tasks --- question
 answering, natural language inference --- are about relationships \emph{between} sentences,
-which single-sentence language modelling never teaches.
+which single-sentence language modelling never teaches. The paper reports NSP reaches
+97--98\% accuracy on its own --- which, in hindsight, is part of the criticism: a task that
+easy teaches little.
+
+\paragraph{Worked example: one MLM prediction.} Toy vocabulary \{the, cat, sat, on, mat\},
+$d = 4$. Sequence ``the cat sat'' with position 3 masked, so the input is
+``the cat \texttt{[MASK]}''. Suppose the encoder's output there is
+$T_3 = [0.1, -0.2, 0.4, 0.3]$. Project through the output matrix (usually the transposed
+embedding matrix --- weight tying again) to get logits over the vocabulary:
+\[
+\text{logits} = [1.2,\ 0.3,\ 2.1,\ 0.5,\ -0.4].
+\]
+Softmax, subtracting the max $2.1$ for numerical stability:
+\[
+[-0.9, -1.8, 0, -1.6, -2.5] \xrightarrow{\exp} [0.407, 0.165, 1.000, 0.202, 0.082],
+\quad \text{sum} = 1.856,
+\]
+\[
+P = [0.219,\ 0.089,\ \mathbf{0.539},\ 0.109,\ 0.044], \qquad
+L = -\ln(0.539) \approx 0.619 .
+\]
+The true token ``sat'' (index 2) got probability $0.539$. Only this masked position
+contributes to the MLM loss; the unmasked positions contribute nothing to it.
+
+\paragraph{What ``trained jointly'' means, mechanically.} It does not mean ``train MLM to
+convergence, then train NSP''. For every single training example:
+\begin{enumerate}
+\item One packed input \texttt{[CLS] A [SEP] B [SEP]}, with $\sim$15\% of tokens masked and a
+  known \texttt{IsNext}/\texttt{NotNext} label.
+\item \textbf{One forward pass} through the shared encoder.
+\item \textbf{Two heads read different positions of the same output:} the MLM head reads the
+  masked positions and softmaxes over the vocabulary; the NSP head reads only the
+  \texttt{[CLS]} position and softmaxes over 2 classes.
+\item \textbf{One combined loss:} $\mathcal{L} = \mathcal{L}_{\text{MLM}} +
+  \mathcal{L}_{\text{NSP}}$.
+\item \textbf{One backward pass:} gradients from both losses converge into the same shared
+  encoder weights.
+\end{enumerate}
+So MLM operates at the \emph{token} level (one loss term per masked token, using each masked
+position's own vector $T_i$) while NSP operates at the \emph{sentence-pair} level (one loss
+term per example, using only $C$). Both shape the same parameters on every batch.
+
+\paragraph{The pretraining data, precisely.} Every training example was a \emph{pair} of text
+spans, 50\% genuine successors and 50\% random. Two nuances: a ``sentence'' here means an
+arbitrary contiguous span of text, not a grammatical sentence; and A and B together were
+capped at 512 tokens, so one or both sides were trimmed to fit. Corpus: BooksCorpus
+($\sim$800M words) and English Wikipedia ($\sim$2{,}500M words, text passages only --- tables,
+lists and headers stripped).
+
+\paragraph{Feature extraction: which layer's vectors should you use?} A 12-layer BERT gives 13
+vectors per token (the input embedding plus one per block), so you must choose. The paper's
+CoNLL-2003 NER ablation:
+\begin{center}
+\begin{tabular}{lc}
+\textbf{Feature choice} & \textbf{Dev F1} \\
+\hline
+First layer (embeddings) only & 91.0 \\
+Last hidden layer only & 94.9 \\
+Weighted sum of all 12 layers & 95.5 \\
+Second-to-last hidden layer & 95.6 \\
+Weighted sum of last four hidden layers & 95.9 \\
+\textbf{Concatenation of last four hidden layers} & \textbf{96.1} \\
+\end{tabular}
+\end{center}
+Summing four 768-vectors keeps the width at 768; concatenating gives $4 \times 768 = 3072$, so
+more information survives --- presumably why it scores best, only 0.3 F1 behind full
+fine-tuning (96.4). In this setting the frozen features were fed to a freshly initialised
+two-layer 768-dimensional BiLSTM plus a classification layer; \emph{that} is what gets trained,
+not BERT.
 
 \paragraph{Advantages.}
 \begin{itemize}
@@ -811,6 +1805,93 @@ cannot see position $i+1$; that is exactly what the decoder's masked self-attent
 The encoder--decoder split is only needed when input and output are genuinely different
 sequences; if you concatenate prompt and answer into one stream, a single masked stack
 suffices.
+
+\paragraph{What exactly got removed.} The original decoder block has \emph{three} sub-layers:
+masked self-attention, cross-attention, feed-forward. With no encoder to attend to, the
+cross-attention sub-layer is simply dropped. So every attention operation anywhere in a GPT is
+masked self-attention --- there is no cross-attention at all. Per block: masked multi-head
+self-attention $\rightarrow$ add $\rightarrow$ LayerNorm $\rightarrow$ feed-forward
+$\rightarrow$ add $\rightarrow$ LayerNorm, repeated 12 times in GPT-1. Note the ordering: GPT-1
+uses post-norm, like the original paper.
+
+\paragraph{The objective, written as a factorisation.} Concatenate input and target into one
+sequence and factorise the joint probability into next-token conditionals:
+\[
+p(w_1, \ldots, w_{n+\eta}) = \prod_{j=1}^{n+\eta} p\!\left(w_j \mid w_1, \ldots, w_{j-1}\right).
+\]
+This single line is the mathematical core of every decoder-only language model.
+
+\paragraph{Two heads at the top.} The \textbf{text prediction} head is the language-model head
+used in pretraining: project the hidden state to the vocabulary and softmax. The \textbf{task
+classifier} head is added during fine-tuning and reads the special delimiter token's
+representation. During pretraining only the first is active.
+
+\paragraph{Contrast with MLM, in one sentence.} BERT predicts only the $\sim$15\% of positions
+it masked, using bidirectional context; a causal LM predicts \emph{every} position's next
+token using only leftward context --- a far denser training signal per token processed, which
+is one practical reason decoder-only models became the standard recipe for generation.
+
+\subsection{Worked Example: The Language-Model Head}
+
+\paragraph{Setup.} Let $d_{\text{model}} = 4$ with a vocabulary of five words: cat, dog, sat,
+mat, the. The final hidden state is $h = [0.5, -0.2, 0.8, 0.1]$, and the embedding matrix
+$W_E$ has one row per token:
+\begin{center}
+\begin{tabular}{lrrrr}
+\textbf{Token} & \textbf{dim1} & \textbf{dim2} & \textbf{dim3} & \textbf{dim4} \\
+\hline
+cat & 1.0 & 0.0 & 0.5 & 0.2 \\
+dog & 0.0 & 1.0 & 0.3 & $-0.1$ \\
+sat & 0.5 & $-0.5$ & 1.0 & 0.0 \\
+mat & 0.2 & 0.1 & 0.8 & 0.3 \\
+the & $-0.3$ & 0.2 & 0.1 & 0.5 \\
+\end{tabular}
+\end{center}
+
+\paragraph{Projection: $\mathrm{logit}_v = h \cdot W_E[v]$.}
+\begin{align*}
+\mathrm{logit}_{\text{cat}} &= (0.5)(1.0) + (-0.2)(0.0) + (0.8)(0.5) + (0.1)(0.2) = 0.92 \\
+\mathrm{logit}_{\text{dog}} &= 0.03, \qquad
+\mathrm{logit}_{\text{sat}} = 1.15, \qquad
+\mathrm{logit}_{\text{mat}} = 0.75, \qquad
+\mathrm{logit}_{\text{the}} = -0.06
+\end{align*}
+
+\paragraph{Softmax} (with $\sum e^{\mathrm{logit}} = 9.756$) gives
+$[0.257, 0.106, \mathbf{0.324}, 0.217, 0.097]$, so ``sat'' wins.
+
+\paragraph{The intuition behind the dot product.} A high logit means $h$ points in nearly the
+same direction as that token's embedding row. The hidden state encodes ``what should come
+next''; the dot product measures how well each vocabulary embedding matches that signal. With
+real numbers ($d_{\text{model}} = 768$, $|V| = 50{,}257$ for GPT-2) this is one
+$768 \times 50{,}257$ matrix multiplication scoring every word at once.
+
+\subsection{GPT-1: One Model, Many Tasks, via Input Reformatting}
+
+GPT-1 adapts to a downstream task \emph{without changing the architecture at all}. Only the
+input formatting changes, using three special tokens --- \texttt{Start}, \texttt{Delim},
+\texttt{Extract} --- plus one new linear layer reading the \texttt{Extract} position's hidden
+state.
+\begin{center}
+\begin{tabularx}{\textwidth}{lY}
+\textbf{Task} & \textbf{Input construction} \\
+\hline
+Classification & \texttt{Start} Text \texttt{Extract} $\rightarrow$ Transformer $\rightarrow$
+Linear \\
+Entailment & \texttt{Start} Premise \texttt{Delim} Hypothesis \texttt{Extract} $\rightarrow$
+Transformer $\rightarrow$ Linear \\
+Similarity & Run \emph{both} orderings (Text1, Text2) and (Text2, Text1) through the same
+Transformer, \emph{add} the two representations, then one Linear. The addition is necessary
+because the model is causal and therefore order-sensitive, whereas similarity should not
+depend on which text is listed first. \\
+Multiple choice & One full sequence per candidate (\texttt{Start} Context \texttt{Delim}
+Answer$_i$ \texttt{Extract}), each scored by the same Transformer $+$ Linear, then a softmax
+across all candidate scores. \\
+\end{tabularx}
+\end{center}
+The Transformer weights are shared across all tasks; only the linear head is task-specific.
+This is the same ``one additional output layer'' pattern as BERT --- pretrain once
+expensively, adapt cheaply.
 
 \paragraph{The generations.}
 \begin{center}
@@ -981,6 +2062,39 @@ scaled parameters far faster than data. The finding:
 280-billion-parameter predecessor, using the same compute budget spent on more tokens. The
 practical heuristic that followed is roughly 20 training tokens per parameter.
 
+\paragraph{The prior belief this overturned.} Following Kaplan et al.\ (2020), the field
+believed that extra compute should go mostly into making the model \emph{larger}, with
+training tokens a secondary concern. Chinchilla showed that recommendation dramatically
+underweighted data. An overparameterised model has the capacity to learn more but no signal
+left to learn from.
+
+\paragraph{Where the trade-off comes from: $C \approx 6ND$.} Training compute in FLOPs is
+approximately
+\[
+C \approx 6\,N\,D,
+\]
+with $N$ the parameter count and $D$ the number of training tokens. (Roughly 2 FLOPs per
+parameter per token in the forward pass, times about 3 for forward-plus-backward.) For a
+\emph{fixed} budget $C$ this ties $N$ and $D$ together: a bigger model means fewer tokens, more
+tokens means a smaller model. The empirical finding is that the optimum scales the two in equal
+proportion.
+
+\paragraph{Numerical sanity check.} Gopher: $N = 280$B, $D = 300$B.
+\[
+C_{\text{Gopher}} \approx 6 \times (280{\times}10^{9}) \times (300{\times}10^{9})
+= 5.04 \times 10^{23} \text{ FLOPs},
+\]
+close to the paper's reported $5.76 \times 10^{23}$ (the gap is expected: the figures are
+rounded and $6ND$ is an approximation). Now hold that budget fixed and ask how many tokens a
+70B model could afford:
+\[
+D = \frac{C}{6N} = \frac{5.76 \times 10^{23}}{6 \times (70 \times 10^{9})}
+\approx 1.37 \times 10^{12} \approx 1.4 \text{ trillion tokens},
+\]
+which is almost exactly Chinchilla's actual token count. The ``4$\times$ smaller model,
+4$\times$ more data, same compute'' story is internally consistent, and you can reproduce it
+in the exam from one formula.
+
 \paragraph{Why this matters beyond training.} A smaller model trained on more data is cheaper
 to \emph{serve}, forever. Training happens once; inference happens billions of times. This is
 the economic reason the industry moved toward smaller, longer-trained models --- and directly
@@ -1007,6 +2121,35 @@ most popular freely available LLM --- spanning several generations and parameter
 small models trained on very large token counts, released with open weights, so that
 academics and small companies could fine-tune state-of-the-art models themselves. It created
 the open LLM ecosystem.
+
+\paragraph{The generations, in one table.}
+\begin{center}
+\begin{tabular}{llccccc}
+\textbf{Model} & \textbf{Data} & \textbf{Params} & \textbf{Context} & \textbf{GQA} &
+\textbf{Tokens} & \textbf{LR} \\
+\hline
+LLaMA 1 & Touvron et al.\ 2023 & 7B & 2k & $\times$ & 1.0T & $3.0{\times}10^{-4}$ \\
+ & & 13B & 2k & $\times$ & 1.0T & $3.0{\times}10^{-4}$ \\
+ & & 33B & 2k & $\times$ & 1.4T & $1.5{\times}10^{-4}$ \\
+ & & 65B & 2k & $\times$ & 1.4T & $1.5{\times}10^{-4}$ \\
+LLaMA 2 & New public mix & 7B & 4k & $\times$ & 2.0T & $3.0{\times}10^{-4}$ \\
+ & & 13B & 4k & $\times$ & 2.0T & $3.0{\times}10^{-4}$ \\
+ & & 34B & 4k & \checkmark & 2.0T & $1.5{\times}10^{-4}$ \\
+ & & 70B & 4k & \checkmark & 2.0T & $1.5{\times}10^{-4}$ \\
+\end{tabular}
+\end{center}
+
+\paragraph{Two patterns to notice.} (1) The learning rate \emph{decreases} as model size
+increases within a generation --- larger models need smaller updates to train stably.
+(2) LLaMA 2 doubles the context window (2k$\rightarrow$4k) and roughly doubles training
+tokens. Also note the GQA column: it is $\times$ for every LLaMA 1 size and for LLaMA 2
+7B/13B, and \checkmark only for LLaMA 2 34B and 70B. This table is the precise source that
+contradicts the slide labelling GQA a ``LLaMA 1 new concept''.
+
+\paragraph{Also worth knowing.} LLaMA uses SentencePiece tokenisation, and the stack ends with
+a final RMSNorm before the linear and softmax layers --- reading the diagram bottom to top:
+embeddings; RMSNorm; attention with RoPE applied inside; residual add; RMSNorm; SwiGLU
+feed-forward; residual add; repeat $N$ times; final RMSNorm; Linear; Softmax.
 
 \paragraph{Scale, to give a sense of cost.} LLaMA 2 70B was among the largest LLMs at
 release: trained on roughly 10 TB of text, requiring about 6000 GPUs for 12 days, on the
@@ -1048,6 +2191,12 @@ only:
 \mathrm{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}} .
 \]
 
+\paragraph{Toy example.} $x = [3, 4, 0, 0]$ with $d = 4$, $\gamma = [1,1,1,1]$,
+$\epsilon \approx 0$. The root mean square is
+$\sqrt{\tfrac{1}{4}(9 + 16 + 0 + 0)} = \sqrt{6.25} = 2.5$, so
+$\mathrm{RMSNorm}(x) = [1.2,\ 1.6,\ 0,\ 0]$. Note that nothing was re-centred --- the zeros
+stayed zero, which is precisely the difference from LayerNorm.
+
 \paragraph{Why the simplification works.} Empirically, the benefit of LayerNorm comes almost
 entirely from \emph{rescaling}, not from \emph{recentring}. Removing the mean computation
 removes one pass over the vector and several operations per token, giving a measurable
@@ -1069,6 +2218,36 @@ does not extrapolate well past the trained length.
 directly into the attention score computation. Linguistically this is the right quantity ---
 what matters is that the adjective is two words before the noun, not that it is at absolute
 position 41. The drawback is extra computation and memory inside every attention operation.
+Mechanically, for query position $i$ and key position $j$:
+\[
+e_{ij} = \frac{(x_i W^Q)(x_j W^K + a_{ij}^K)^\top}{\sqrt{d_z}}, \qquad
+\alpha_{ij} = \mathrm{softmax}_j(e_{ij}), \qquad
+z_i = \sum_j \alpha_{ij}\,(x_j W^V + a_{ij}^V).
+\]
+The learned vectors $a_{ij}^K$ and $a_{ij}^V$ are indexed \emph{only} by the offset $j - i$,
+not by $i$ and $j$ separately, so every pair of positions with the same gap reuses the same
+vector. The offset is clipped to some maximum $\pm k$, so only $2k+1$ vectors are ever learned
+regardless of sequence length --- and, crucially, offsets beyond $\pm k$ cannot be
+distinguished at all.
+
+\paragraph{Worked example (Shaw).} Let $d_z = 2$, sentence ``the cat sat'', query at $i = 3$.
+Keys $k_1 = [1,0]$, $k_2 = [0,1]$, $k_3 = [1,1]$; query $q_3 = [1,1]$; learned relative-key
+biases $a^K_{-2} = [0.1, 0.1]$, $a^K_{-1} = [0.2, -0.1]$, $a^K_{0} = [0,0]$. Then
+\[
+e_{3,1} = \frac{[1,1]\cdot[1.1, 0.1]}{\sqrt2} = 0.849, \qquad
+e_{3,2} = \frac{[1,1]\cdot[0.2, 0.9]}{\sqrt2} = 0.778,
+\]
+\[
+e_{3,3} = \frac{[1,1]\cdot[1,1]}{\sqrt2} = 1.414,
+\]
+and softmax gives $\alpha_{3,\cdot} = [0.271, 0.252, 0.477]$. With values
+$v_1 = [0.5,0.5], v_2 = [1,0], v_3 = [0,1]$ and value biases
+$a^V_{-2} = [0, 0.1]$, $a^V_{-1} = [0.1, 0]$, $a^V_0 = [0,0]$:
+\[
+z_3 = 0.271[0.5, 0.6] + 0.252[1.1, 0] + 0.477[0, 1] = [0.413,\ 0.639].
+\]
+Notice the offset bias enters \emph{twice} --- once in the score through the key, once in the
+output through the value.
 
 \paragraph{Rotary positional encoding (RoPE), used by LLaMA.} Do not \emph{add} anything.
 \emph{Rotate} the query and key vectors by an angle proportional to their position, treating
@@ -1080,6 +2259,36 @@ q_m'^\top k_n' = q_m^\top R_{n-m} k_n .
 The crucial property: because rotations compose, the dot product of a rotated query and a
 rotated key depends only on the \emph{difference} $n - m$. So an absolute-style operation
 produces relative-position behaviour for free.
+
+\paragraph{The algebra, in two lines.} For rotation matrices $R(a)^\top = R(-a)$ and
+$R(-a)R(b) = R(b-a)$. So
+\[
+q_m \cdot k_n = q^\top R(m\theta)^\top R(n\theta)\, k = q^\top R\big((n-m)\theta\big)\, k,
+\]
+which depends only on $n - m$. In $d$ dimensions the same 2-D rotation is applied
+independently to $d/2$ coordinate pairs $(1,2), (3,4), \ldots$, each with its own angle
+$m\theta_t$, where the $\theta_t$ form a geometrically decreasing sequence --- the same
+frequency-schedule idea as the original sinusoids. In practice it is computed element-wise in
+$O(d)$ rather than by building the full $d \times d$ matrix.
+
+\paragraph{Numerical walkthrough.} Let $\theta = 90^\circ$ and $q = k = [1, 0]$ before
+rotation.
+\begin{itemize}
+\item $m = 1,\ n = 3$ (offset 2): $q_1 = R(90^\circ)[1,0] = [0,1]$ and
+  $k_3 = R(270^\circ)[1,0] = [0,-1]$. Dot product $= -1$.
+\item $m = 6,\ n = 8$ (offset 2 again, but completely different absolute positions):
+  $R(540^\circ) = R(180^\circ)$ so $q_6 = [-1, 0]$; $R(720^\circ) = R(0^\circ) = I$ so
+  $k_8 = [1, 0]$. Dot product $= -1$.
+\end{itemize}
+The same offset gives the same score even though the absolute positions are unrelated. That is
+the relative-position property, verified arithmetically.
+
+\paragraph{Shaw versus RoPE, side by side.} Shaw \emph{adds} a small \emph{learned} vector,
+indexed by a \emph{clipped} offset --- it costs $2k+1$ trained parameters and cannot tell
+apart offsets beyond $\pm k$. RoPE \emph{multiplies} (rotates) $Q$ and $K$ by a fixed,
+\emph{unlearned}, deterministic function of absolute position; the relative behaviour falls
+out of the geometry with no extra parameters and no clipping, so it extends to sequence
+lengths never seen in training, which a clipped learned table simply cannot.
 
 \paragraph{Why it is the modern default.}
 \begin{itemize}
@@ -1125,7 +2334,31 @@ Queries stay fully multi-headed in all three; only the keys and values are share
 
 \paragraph{Why it works.} The expressive power of attention lives mostly in having many
 different \emph{queries} --- many different questions being asked. Having many distinct
-\emph{keys and values} matters less. GQA exploits that asymmetry.
+\emph{keys and values} matters less. GQA exploits that asymmetry. Formally, with $h$ query
+heads: MHA has $h$ K heads and $h$ V heads; GQA splits the $h$ query heads into $g < h$ groups
+with $g$ K heads and $g$ V heads, each shared by $h/g$ query heads; MQA is the extreme
+$g = 1$.
+
+\paragraph{Numerical illustration.} Take $h = 8$ query heads with $d_{\text{head}} = 64$ and
+count cached values \emph{per token}:
+\begin{center}
+\begin{tabularx}{\textwidth}{lYY}
+\textbf{Scheme} & \textbf{K cache per token} & \textbf{K$+$V total per token} \\
+\hline
+MHA & $8 \times 64 = 512$ & 1024 \\
+GQA, $g = 4$ & $4 \times 64 = 256$ & 512 --- half of MHA, all 8 query heads intact \\
+MQA, $g = 1$ & $1 \times 64 = 64$ & 128 --- an $8\times$ reduction \\
+\end{tabularx}
+\end{center}
+Everything else --- the causal mask, the softmax, the value-weighted sum --- is unchanged. The
+only thing GQA alters is how many independent K/V projections exist relative to Q projections.
+
+\paragraph{Why the KV cache is what blows up.} Its size grows as (batch size $\times$ sequence
+length $\times$ layers $\times$ KV heads $\times$ head dimension). Long conversations and many
+concurrent users multiply those factors together quickly, which is why a 70B model can exhaust
+GPU memory even when the \emph{weights} fit comfortably. Note the diagnostic consequence:
+quantizing only the weights would not help there, because the weights were never the binding
+constraint.
 
 \paragraph{Important correction.} The lecture slides list grouped multi-query attention among
 ``LLaMA 1 new concepts''. In the published papers, LLaMA 1 used standard multi-head
@@ -1181,7 +2414,15 @@ extended multi-turn conversations, and RAG pipelines that can afford to retrieve
   matrix (not covered in this course), but the asymptotic compute cost remains.
 \item Cost and latency scale with context, so a long prompt is expensive on every call.
 \item Quality within the window can degrade even when the model does not error.
+\item The KV cache also grows \emph{linearly} with context, so it comes to dominate serving
+  memory.
 \end{itemize}
+
+\paragraph{Putting a number on the quadratic cost.} At $N = 4$K tokens the attention score
+matrix has $4096^2 \approx 16.8$ million entries per head. At $N = 128$K --- only $32\times$
+longer --- it has $128{,}000^2 \approx 16.4$ \emph{billion} entries per head, which is
+$32^2 = 1024\times$ more. That factor-of-1024 for a factor-of-32 increase in length is the
+whole problem in one line.
 
 \paragraph{Use it when.} The task genuinely requires global reasoning over a document.
 \paragraph{Do not use it when.} You only need a few relevant passages --- RAG is cheaper,
@@ -1281,6 +2522,26 @@ their sum $C = 254$ far exceeds the largest representable int8 value. Without a 
 accumulator, the result would overflow and the precision loss would make the whole
 quantization pointless.
 
+\paragraph{What the bits are actually doing.} Every floating-point format is
+1 sign bit $+$ exponent bits $+$ mantissa bits. The exponent bits buy \textbf{range} (how
+large or small a value can be); the mantissa bits buy \textbf{precision} (how many significant
+digits).
+\begin{center}
+\begin{tabular}{lccc}
+\textbf{Format} & \textbf{Sign} & \textbf{Exponent} & \textbf{Mantissa} \\
+\hline
+FP32 & 1 & 8 & 23 \\
+TF32 (used internally in matmul) & 1 & 8 & 10 \\
+FP16 & 1 & 5 & 10 \\
+BFLOAT16 & 1 & 8 & 7 \\
+\end{tabular}
+\end{center}
+Read the table as a single story: FP16 has only 5 exponent bits, so its \emph{range} is
+narrower than FP32's --- its smallest normal positive value is about
+$2^{-14} \approx 6 \times 10^{-5}$. BFLOAT16 keeps FP32's full 8 exponent bits (same range)
+and pays for it with only 7 mantissa bits (coarser precision). That is exactly the trade that
+makes bfloat16 the safe training format: it gives up digits, not range.
+
 \paragraph{Case 1: float32 $\rightarrow$ float16.} Straightforward, because both types follow
 the same representation scheme. Two checks are required:
 \begin{itemize}
@@ -1306,6 +2567,33 @@ float32; and $Z$ is the \emph{zero-point}, the int8 value that maps exactly to f
 Representing zero exactly matters because zero appears everywhere in machine learning
 (padding masks, ReLU outputs, sparse weights); if it were only approximated, error would be
 injected into every padded position.
+
+\paragraph{Worked example.} Suppose a weight tensor's observed range is
+$[a, b] = [-2.0,\ 6.0]$, to be mapped onto the 256 codes $0 \ldots 255$.
+\[
+S = \frac{b - a}{255} = \frac{8.0}{255} \approx 0.03137,
+\]
+\[
+Z = \mathrm{round}(-a/S) = \mathrm{round}(2.0/0.03137) = \mathrm{round}(63.75) = 64 .
+\]
+Check that the endpoints land on the ends of the code range:
+\[
+x_q(a) = \mathrm{round}(-63.75 + 64) = 0, \qquad
+x_q(b) = \mathrm{round}(191.25 + 64) = 255. \ \checkmark
+\]
+Now dequantise and see how much was lost:
+\[
+x_q = 0 \Rightarrow 0.03137(0 - 64) = -2.008 \approx -2.0, \qquad
+x_q = 255 \Rightarrow 0.03137(255 - 64) = 5.992 \approx 6.0,
+\]
+and, critically, $x_q = 64 \Rightarrow 0.03137(64-64) = 0$ \emph{exactly}. The small errors at
+the ends are the lossiness; the exact zero is the reason the zero-point exists.
+
+\paragraph{An honest gap in the lecture material.} Neither the slides nor the reference papers
+explain how gradients are computed \emph{through} the rounding step in quantization-aware
+training, given that rounding to a fixed grid is not differentiable. (In practice a
+``straight-through estimator'' is used, but since that is not covered in the course, it is
+better to flag the gap than to invent an answer.)
 
 \paragraph{Advantages.} Large reductions in memory and bandwidth; often 2--4$\times$ faster
 inference; makes large models runnable on consumer hardware; requires no architectural change.
@@ -1335,11 +2623,15 @@ time and computational resources.
 \paragraph{Common techniques.}
 \begin{itemize}
 \item \textbf{Adapters.} Insert small bottleneck feed-forward layers between the existing
-  Transformer layers and train only those.
+  Transformer layers and train only those. Concretely: down-project $H \rightarrow r$, apply a
+  nonlinearity, up-project $r \rightarrow H$, with $r \ll H$.
 \item \textbf{LoRA (Low-Rank Adaptation).} Do not modify $W$; learn a low-rank correction
   $\Delta W = BA$, where $B \in \mathbb{R}^{d \times r}$ and $A \in \mathbb{R}^{r \times k}$
   with $r \ll d$. The forward pass becomes $h = Wx + BAx$. Training a $4096 \times 4096$ layer
-  with $r = 8$ means training about 65{,}000 parameters instead of 16.8 million.
+  with $r = 8$ means training about 65{,}000 parameters instead of 16.8 million. In full:
+  $A \in \mathbb{R}^{8 \times 4096}$ is $32{,}768$ parameters, $B \in \mathbb{R}^{4096 \times 8}$
+  is another $32{,}768$, so $65{,}536$ against $16.78$M --- roughly \textbf{$256\times$ fewer},
+  while still able to express any rank-$\le 8$ correction to that matrix.
 \item Prompt/prefix tuning: learn continuous ``virtual tokens'' prepended to the input.
 \end{itemize}
 
@@ -1415,8 +2707,26 @@ remaining weights must be readjusted to compensate. Pruning is best understood a
 \item The teacher LLM generates \emph{soft labels} --- full probability distributions --- over
   a dataset.
 \item The student is trained to match the teacher's output distribution, minimising the KL
-  divergence between the two distributions.
+  divergence between the two distributions:
+  \[
+  D_{\mathrm{KL}}(P \,\|\, Q) = \sum_v P(v) \log \frac{P(v)}{Q(v)},
+  \]
+  where $P$ is the teacher's distribution and $Q$ the student's.
 \end{enumerate}
+
+\paragraph{Numerical check on the loss.} Toy 3-token vocabulary, teacher
+$P = [0.7, 0.2, 0.1]$.
+\begin{itemize}
+\item A student that matches exactly, $Q_a = [0.7, 0.2, 0.1]$, gives
+  $D_{\mathrm{KL}} = 0$. Identical distributions, zero divergence --- a sanity check that the
+  loss is correctly oriented.
+\item A weak, nearly uniform student $Q_b = [0.34, 0.33, 0.33]$ gives
+  \[
+  0.7\ln\tfrac{0.7}{0.34} + 0.2\ln\tfrac{0.2}{0.33} + 0.1\ln\tfrac{0.1}{0.33}
+  \approx 0.505 - 0.100 - 0.119 = 0.286 \text{ nats}.
+  \]
+\end{itemize}
+Clearly positive for the worse student, zero for the perfect one.
 
 \paragraph{Why soft labels beat hard labels.} A hard label says only ``this is a cat''. A soft
 distribution says ``85\% cat, 12\% dog, 0.01\% aeroplane'', which encodes the teacher's
